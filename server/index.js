@@ -1,0 +1,588 @@
+import express from 'express'
+import cors from 'cors'
+import fs from 'fs/promises'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import axios from 'axios'
+import * as cheerio from 'cheerio'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+const app = express()
+const PORT = 3001
+
+app.use(cors())
+app.use(express.json())
+
+const DATA_DIR = path.join(__dirname, 'data')
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json')
+const USERS_FILE = path.join(DATA_DIR, 'users.json')
+const OPERATIONS_FILE = path.join(DATA_DIR, 'operations.json')
+const PROGRESS_FILE = path.join(DATA_DIR, 'progress.json')
+const STATS_FILE = path.join(DATA_DIR, 'stats.json')
+
+// 确保数据目录存在
+await fs.mkdir(DATA_DIR, { recursive: true })
+
+// 读取配置
+async function readConfig() {
+  try {
+    const data = await fs.readFile(CONFIG_FILE, 'utf-8')
+    return JSON.parse(data)
+  } catch {
+    return { cookie: '', euids: [] }
+  }
+}
+
+// 保存配置
+async function saveConfig(config) {
+  await fs.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2))
+}
+
+// 读取用户数据
+async function readUsers() {
+  try {
+    const data = await fs.readFile(USERS_FILE, 'utf-8')
+    return JSON.parse(data)
+  } catch {
+    return []
+  }
+}
+
+// 保存用户数据
+async function saveUsers(users) {
+  await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2))
+}
+
+// 读取操作记录
+async function readOperations() {
+  try {
+    const data = await fs.readFile(OPERATIONS_FILE, 'utf-8')
+    return JSON.parse(data)
+  } catch {
+    return []
+  }
+}
+
+// 保存操作记录
+async function saveOperation(operation) {
+  const operations = await readOperations()
+  operations.push({ ...operation, timestamp: Date.now() })
+  await fs.writeFile(OPERATIONS_FILE, JSON.stringify(operations, null, 2))
+}
+
+// 读取浏览进度
+async function readProgress() {
+  try {
+    const data = await fs.readFile(PROGRESS_FILE, 'utf-8')
+    return JSON.parse(data)
+  } catch {
+    return {}
+  }
+}
+
+// 保存浏览进度
+async function saveProgress(progress) {
+  await fs.writeFile(PROGRESS_FILE, JSON.stringify(progress, null, 2))
+}
+
+// 读取统计数据
+async function readStats() {
+  try {
+    const data = await fs.readFile(STATS_FILE, 'utf-8')
+    return JSON.parse(data)
+  } catch {
+    return {}
+  }
+}
+
+// 保存统计数据
+async function saveStats(stats) {
+  await fs.writeFile(STATS_FILE, JSON.stringify(stats, null, 2))
+}
+
+// 计算 maxTime
+function calculateMaxTime() {
+  return Math.floor(Date.now() / 1000)
+}
+
+// 获取配置
+app.get('/api/config', async (req, res) => {
+  const config = await readConfig()
+  res.json(config)
+})
+
+// 保存配置
+app.post('/api/config', async (req, res) => {
+  await saveConfig(req.body)
+
+  // 同步更新用户列表
+  const users = await readUsers()
+  const existingEuids = new Set(users.map(u => u.euid))
+
+  for (const euid of req.body.euids) {
+    if (!existingEuids.has(euid)) {
+      users.push({ euid })
+    }
+  }
+
+  // 移除不在配置中的用户
+  const filteredUsers = users.filter(u => req.body.euids.includes(u.euid))
+  await saveUsers(filteredUsers)
+
+  res.json({ success: true })
+})
+
+// 获取单个用户的回帖列表
+app.get('/api/replies/:euid', async (req, res) => {
+  try {
+    const { euid } = req.params
+    const config = await readConfig()
+
+    if (!config.cookie) {
+      return res.status(400).json({ error: '请先配置 Cookie' })
+    }
+
+    const progress = await readProgress()
+    const users = await readUsers()
+    const userInfo = users.find(u => u.euid === euid) || { euid }
+
+    const userProgress = progress[euid] || { page: 1, maxTime: calculateMaxTime() }
+    const page = parseInt(req.query.page) || userProgress.page
+    const pageSize = 50
+
+    // 如果请求第一页，使用当前时间戳；否则使用保存的 maxTime
+    const maxTime = page === 1 ? calculateMaxTime() : userProgress.maxTime
+
+    const url = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${maxTime}&page=${page}&pageSize=${pageSize}`
+
+    console.log('请求URL:', url)
+
+    const response = await axios.get(url, {
+      headers: {
+        'cookie': config.cookie,
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+      }
+    })
+
+    if (response.data.code === 1 && response.data.data) {
+      const replies = response.data.data.replyWithQuoteDtoList || []
+      const hasNext = response.data.data.nextPage || false
+      const newMaxTime = response.data.data.maxTime || maxTime
+
+      res.json({
+        euid,
+        username: userInfo.username || replies[0]?.username || euid,
+        userInfo,
+        page,
+        hasNext,
+        maxTime: newMaxTime,
+        replies
+      })
+    } else {
+      res.status(400).json({ error: '获取数据失败' })
+    }
+  } catch (error) {
+    console.error(`获取用户数据失败:`, error.message)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 举报接口
+app.post('/api/report', async (req, res) => {
+  try {
+    const { tid, pid, topicId } = req.body
+    const config = await readConfig()
+
+    const url = `https://bbs.hupu.com/api/v2/threads/${tid}/report`
+
+    const response = await axios.post(url, {
+      tid: String(tid),
+      topicId: String(topicId),
+      type: '4',
+      pid: String(pid),
+      content: '低俗谩骂、阴阳怪气、攻击引战、跨区嘲讽'
+    }, {
+      headers: {
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'cache-control': 'no-cache',
+        'content-type': 'application/json',
+        'pragma': 'no-cache',
+        'priority': 'u=1, i',
+        'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'cookie': config.cookie,
+        'referer': `https://bbs.hupu.com/${tid}.html`,
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+      }
+    })
+
+    console.log('举报成功:', { tid, pid, response: response.data })
+    res.json({ success: true, data: response.data, status: 'success' })
+  } catch (error) {
+    console.error('举报失败:', error.response?.data || error.message)
+    res.status(error.response?.status || 500).json({
+      error: error.message,
+      details: error.response?.data,
+      status: 'failed'
+    })
+  }
+})
+
+// 保存操作记录
+app.post('/api/save-operation', async (req, res) => {
+  try {
+    await saveOperation(req.body)
+    res.json({ success: true })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 保存浏览进度
+app.post('/api/save-progress', async (req, res) => {
+  try {
+    const progress = await readProgress()
+    const { euid, page, maxTime } = req.body
+    progress[euid] = { page, maxTime }
+    await saveProgress(progress)
+    res.json({ success: true })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 获取用户列表
+app.get('/api/users', async (req, res) => {
+  const users = await readUsers()
+  res.json(users)
+})
+
+// 抓取用户主页信息
+app.post('/api/fetch-user-info', async (req, res) => {
+  try {
+    const { euid } = req.body
+    const config = await readConfig()
+
+    const url = `https://my.hupu.com/${euid}?tabKey=2`
+
+    const response = await axios.get(url, {
+      headers: {
+        'cookie': config.cookie,
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+      }
+    })
+
+    const $ = cheerio.load(response.data)
+
+    // 用户名：title 下的 h2 标签
+    const username = $('.title h2').text().trim() || `用户${euid}`
+
+    // 统计数据：tabListWarp 下的 tabItem
+    let replyCount = '-'
+    let recommendCount = '-'
+    let postCount = '-'
+
+    $('.tabListWarp .tabItem').each((i, elem) => {
+      const nameElem = $(elem).find('.nameStyle')
+      const numElem = $(elem).find('.numValueStyle')
+
+      if (nameElem.length > 0 && numElem.length > 0) {
+        const name = nameElem.text().trim()
+        const num = numElem.text().trim()
+
+        if (name === '回帖' && num) {
+          replyCount = num
+        } else if (name === '推荐' && num) {
+          recommendCount = num
+        } else if (name === '发贴' && num) {
+          postCount = num
+        }
+      }
+    })
+
+    // 声望值：tagTitleList 的最后一个 tagItem 里的数字
+    let reputation = '-'
+    const tagTitleList = $('.tagTitleList')
+    if (tagTitleList.length > 0) {
+      const lastTagItem = tagTitleList.find('.tagItem').last()
+      if (lastTagItem.length > 0) {
+        const text = lastTagItem.text()
+        const match = text.match(/\d+/)
+        if (match) {
+          reputation = match[0]
+        }
+      }
+    }
+
+    const users = await readUsers()
+    const userIndex = users.findIndex(u => u.euid === euid)
+
+    const userData = {
+      euid,
+      username,
+      replyCount,
+      recommendCount,
+      postCount,
+      reputation,
+      lastUpdate: new Date().toISOString()
+    }
+
+    if (userIndex >= 0) {
+      users[userIndex] = { ...users[userIndex], ...userData }
+    } else {
+      users.push(userData)
+    }
+
+    await saveUsers(users)
+
+    console.log('抓取成功:', userData)
+    res.json({ success: true, data: userData })
+  } catch (error) {
+    console.error('抓取用户信息失败:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 获取举报结果
+app.post('/api/report-results', async (req, res) => {
+  try {
+    const { page = 1 } = req.body
+    const config = await readConfig()
+
+    if (!config.cookie) {
+      return res.status(400).json({ error: '请先配置 Cookie' })
+    }
+
+    const response = await axios.post('https://my.hupu.com/pcmapi/pc/space/v1/pm/getPmDetail', {
+      fromPuid: 16243921, // 虎扑站务组
+      page: {
+        pageNum: page,
+        pageSize: 50
+      }
+    }, {
+      headers: {
+        'accept': '*/*',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'cache-control': 'no-cache',
+        'content-type': 'application/json;charset=UTF-8',
+        'pragma': 'no-cache',
+        'priority': 'u=1, i',
+        'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'cookie': config.cookie,
+        'referer': 'https://my.hupu.com/personalMessage',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
+      }
+    })
+
+    if (response.data.code === 1 && response.data.data) {
+      const results = response.data.data.pmDetailList.map(item => {
+        // 判断是否举报成功
+        const isSuccess = item.content.includes('个人声望：+1（单日奖励上限为10声望）')
+
+        // 提取关键评论内容
+        let quotedContent = ''
+        const match1 = item.content.match(/你对回复[''](.+?)['']的举报/)
+        const match2 = item.content.match(/已收到你对回帖\\"(.+?)\\"的反馈/)
+
+        if (match1) {
+          quotedContent = match1[1]
+        } else if (match2) {
+          quotedContent = match2[1]
+        }
+
+        return {
+          pmid: item.pmid,
+          content: quotedContent || item.content.substring(0, 100),
+          fullContent: item.content,
+          createTime: item.createTime,
+          isSuccess,
+          nickName: item.nickName
+        }
+      })
+
+      res.json({
+        results,
+        page: response.data.data.page
+      })
+    } else {
+      res.status(400).json({ error: '获取举报结果失败' })
+    }
+  } catch (error) {
+    console.error('获取举报结果失败:', error.response?.data || error.message)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 统计举报结果
+app.post('/api/fetch-report-stats', async (req, res) => {
+  try {
+    const config = await readConfig()
+
+    if (!config.cookie) {
+      return res.status(400).json({ error: '请先配置 Cookie' })
+    }
+
+    // 获取所有举报结果
+    let page = 1
+    let hasMore = true
+    const allReports = []
+
+    console.log('开始获取举报结果...')
+
+    while (hasMore) {
+      try {
+        const response = await axios.post('https://my.hupu.com/pcmapi/pc/space/v1/pm/getPmDetail', {
+          fromPuid: 16243921, // 虎扑站务组
+          page: {
+            pageNum: page,
+            pageSize: 30
+          }
+        }, {
+          headers: {
+            'accept': '*/*',
+            'content-type': 'application/json;charset=UTF-8',
+            'cookie': config.cookie,
+            'referer': 'https://my.hupu.com/personalMessage',
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+          }
+        })
+
+        if (response.data.code === 1 && response.data.data) {
+          const pmList = response.data.data.pmDetailList || []
+
+          pmList.forEach(item => {
+            // 判断是否举报成功
+            const isSuccess = item.content.includes('个人声望：+1（单日奖励上限为10声望）')
+
+            // 从内容中提取被举报用户的用户名
+            // 格式可能是: "你对用户 xxx 的回复..." 或 "你对回复'xxx'的举报..."
+            let targetUsername = null
+
+            // 尝试多种匹配模式
+            const patterns = [
+              /你对用户\s*[「『]?([^」』\s]+)[」』]?\s*的回复/,
+              /你对\s*[「『]?([^」』\s]+)[」』]?\s*的回复/,
+              /对用户\s*[「『]?([^」』\s]+)[」』]?\s*的举报/,
+              /用户\s*[「『]?([^」』\s]+)[」』]?\s*的回帖/
+            ]
+
+            for (const pattern of patterns) {
+              const match = item.content.match(pattern)
+              if (match) {
+                targetUsername = match[1]
+                break
+              }
+            }
+
+            allReports.push({
+              content: item.content,
+              createTime: item.createTime,
+              isSuccess,
+              targetUsername
+            })
+          })
+
+          console.log(`已获取第 ${page} 页，共 ${pmList.length} 条记录`)
+
+          // 检查是否还有下一页
+          const pageInfo = response.data.data.page
+          hasMore = pageInfo && pageInfo.pageNum < pageInfo.totalPage
+          page++
+
+          // 添加延迟避免请求过快
+          if (hasMore) {
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          }
+        } else {
+          hasMore = false
+        }
+      } catch (error) {
+        console.error(`获取第 ${page} 页失败:`, error.message)
+        hasMore = false
+      }
+    }
+
+    console.log(`总共获取 ${allReports.length} 条举报记录`)
+
+    // 获取今天和昨天的日期
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+
+    const todayTimestamp = today.getTime() / 1000
+    const yesterdayTimestamp = yesterday.getTime() / 1000
+
+    // 统计今天和昨天的数据
+    const todayStats = { totalCount: 0, successCount: 0, failCount: 0 }
+    const yesterdayStats = { totalCount: 0, successCount: 0, failCount: 0 }
+
+    allReports.forEach(report => {
+      const reportDate = new Date(report.createTime * 1000)
+      const reportDateStart = new Date(reportDate.getFullYear(), reportDate.getMonth(), reportDate.getDate())
+      const reportTimestamp = reportDateStart.getTime() / 1000
+
+      if (reportTimestamp >= todayTimestamp) {
+        // 今天
+        todayStats.totalCount++
+        if (report.isSuccess) {
+          todayStats.successCount++
+        } else {
+          todayStats.failCount++
+        }
+      } else if (reportTimestamp >= yesterdayTimestamp && reportTimestamp < todayTimestamp) {
+        // 昨天
+        yesterdayStats.totalCount++
+        if (report.isSuccess) {
+          yesterdayStats.successCount++
+        } else {
+          yesterdayStats.failCount++
+        }
+      }
+    })
+
+    // 保存统计结果
+    const statsData = {
+      lastUpdate: new Date().toISOString(),
+      today: todayStats,
+      yesterday: yesterdayStats
+    }
+    await saveStats(statsData)
+
+    console.log('统计完成:', { today: todayStats, yesterday: yesterdayStats })
+    res.json({
+      success: true,
+      today: todayStats,
+      yesterday: yesterdayStats
+    })
+  } catch (error) {
+    console.error('统计举报结果失败:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// 获取已保存的统计数据
+app.get('/api/stats', async (req, res) => {
+  try {
+    const stats = await readStats()
+    res.json(stats)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`)
+})

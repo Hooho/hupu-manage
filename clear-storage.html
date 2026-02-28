@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>清理浏览记录</title>
+</head>
+<body>
+    <h1>清理 localStorage 中的页码记录</h1>
+    <button onclick="clearPageRecords()">清理页码记录</button>
+    <div id="result"></div>
+    
+    <script>
+        function clearPageRecords() {
+            const keys = Object.keys(localStorage);
+            const pageKeys = keys.filter(key => key.startsWith('browsePage_'));
+            
+            pageKeys.forEach(key => {
+                localStorage.removeItem(key);
+            });
+            
+            document.getElementById('result').innerHTML = 
+                `<p style="color: green;">已清理 ${pageKeys.length} 条页码记录</p>
+                <p>清理的键: ${pageKeys.join(', ')}</p>`;
+        }
+    </script>
+</body>
+</html>

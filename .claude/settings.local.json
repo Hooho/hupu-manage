@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(chmod +x start.sh)",
+      "Bash(npm run dev)",
+      "Bash(cd /Users/HOHO/.claude/skills/ui-ux-pro-max && python3 scripts/search.py \"orange sports energetic professional\" --domain color -n 3)",
+      "Bash(cd /Users/Projects/AI/comment/public/imgs && curl -o hupu-logo.png \"https://w1.hoopchina.com.cn/channel/website/static/images/basketball-nba-logo.png\")",
+      "Bash(lsof -ti:3001 | xargs kill -9 2>/dev/null || echo \"No process found on port 3001\")",
+      "Bash(lsof -ti:3000 | xargs kill -9 2>/dev/null || echo \"No process found on port 3000\")",
+      "Bash(curl -X POST http://localhost:3001/api/report \\\\\n  -H \"Content-Type: application/json\" \\\\\n  -d '{\n    \"tid\": 637534289,\n    \"pid\": 259880,\n    \"topicId\": 179\n  }' \\\\\n  -w \"\\\\nHTTP Status: %{http_code}\\\\n\")",
+      "Bash(curl -s \"https://bbs.hupu.com/637534289.html\" \\\\\n  -H \"Cookie: smidV2=20260228183425a39385503be2809c704e7927436038f200c174048f2e32960\" \\\\\n  -H \"User-Agent: Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36\" \\\\\n  | grep -i \"csrf\\\\|token\" | head -5)",
+      "Bash(curl -X POST \"https://bbs.hupu.com/api/v2/threads/637534289/report\" \\\\\n  -H \"Cookie: smidV2=20260228183425a39385503be2809c704e7927436038f200c174048f2e32960; _c_WBKFRo=JsSxGtB9lj8iqu9HRZQfura8gevVss9bhsvLZ6My; _nb_ioWEgULi=; _HUPUSSOID=ff9c4dff-79ef-4b36-abd9-fe22c40993ee; ua=50636464; _CLT=00376064be821b71351c003dda774e37; tfstk=gDAI344km3dNyouK2kuaccwBqx1WNVlqFz_JoUFUy6Cpy_TJrgSFUgJ_PE88LTnhTQt6laSda6RENL1H_pPPYDfWyn5S0mlqgeYht_nq0YOnfDfAzkE84whOB_7SQTOrceYhZP4a2xJ9-bi7T3jRw3COBwbfwJFp2GBOjab8vaFK5FIGXaIR27IO6ZQV2yKRwVTOjaCRJ3BK5FIGy_I-1fPC72sMR4tog7oiuATFf7FJ1NnlqeigMwAFR9svJBN8wqQCdiLdfD1nO46WA9OZOobBBEtGR3c0t6BWpKCpNmGC6EvwvNt-c8s9hBA53BibnMdhqn1pCcFCw6QXPtJZy-sweFA1CBM4rNAeyBXVMjqd4d8XNaOoqftXJH9AHBEC4OVVc6ouFP60NNsq5VwuETDFX1vRRk2fpNbZ4Vg_3UXdSN9t5VwuE9QG7G3s5-8l\" \\\\\n  -H \"Content-Type: application/json\" \\\\\n  -H \"User-Agent: Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" \\\\\n  -H \"Accept: application/json, text/plain, */*\" \\\\\n  -H \"Origin: https://bbs.hupu.com\" \\\\\n  -H \"Referer: https://bbs.hupu.com/637534289.html\" \\\\\n  -d '{\"tid\":\"637534289\",\"topicId\":\"179\",\"type\":\"4\",\"pid\":\"259880\",\"content\":\"低俗谩骂、阴阳怪气、攻击引战、跨区嘲讽\"}' \\\\\n  -v 2>&1 | tail -20)",
+      "Bash(curl -X POST http://localhost:3001/api/report \\\\\n  -H \"Content-Type: application/json\" \\\\\n  -d '{\"tid\": 637534289, \"pid\": 259880, \"topicId\": 179}' \\\\\n  -s | jq .)",
+      "Bash(cd /Users/Projects/AI/comment && npm install react-hot-toast)",
+      "Bash(ls -la /Users/Projects/AI/comment/*.md)",
+      "Bash(lsof -ti:3000,3001 | xargs kill -9 2>/dev/null || echo \"No processes to kill\")",
+      "Bash(git add .)"
+    ]
+  }
+}
