@@ -7,8 +7,9 @@ import EmptyState from '../components/EmptyState'
 import { Download, Trash } from '../components/icons'
 
 const TABS = [
-  { key: 'request', label: '请求' },
-  { key: 'accounts', label: '监控账号' }
+  { key: 'accounts', label: '账号' },
+  { key: 'monitor', label: '监控账号' },
+  { key: 'schedule', label: '调度' }
 ]
 
 function ConfigPage() {
@@ -18,10 +19,19 @@ function ConfigPage() {
   const [saving, setSaving] = useState(false)
   const [fetching, setFetching] = useState('')
   const [confirmRemove, setConfirmRemove] = useState(null)
-  const [tab, setTab] = useState('request')
+  const [tab, setTab] = useState('accounts')
+
+  // 多 cookie 账号管理
+  const [cookies, setCookies] = useState([])
+  const [newCookie, setNewCookie] = useState('')
+  const [newName, setNewName] = useState('')
+  const [newEuidInput, setNewEuidInput] = useState('')
+  const [editingAccount, setEditingAccount] = useState(null) // { id, name, euid }
+  const startEdit = (a) => setEditingAccount({ id: a.id, name: a.name || '', euid: a.euid || '' })
 
   useEffect(() => {
     load()
+    loadCookies()
   }, [])
 
   const load = async () => {
@@ -31,6 +41,69 @@ function ConfigPage() {
       setUsers(u.data)
     } catch (error) {
       toast.error('加载失败: ' + error.message)
+    }
+  }
+
+  const loadCookies = async () => {
+    try {
+      const r = await axios.get('/api/accounts')
+      setCookies(r.data.accounts || [])
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const addCookie = async () => {
+    if (!newCookie.trim()) return toast.error('先粘贴 cookie')
+    try {
+      await axios.post('/api/accounts', {
+        cookie: newCookie.trim(),
+        name: newName.trim() || undefined,
+        euid: newEuidInput.trim() || undefined
+      })
+      setNewCookie('')
+      setNewName('')
+      setNewEuidInput('')
+      toast.success('已添加')
+      loadCookies()
+    } catch (e) {
+      toast.error('添加失败: ' + e.message)
+    }
+  }
+
+  const updateCookie = async () => {
+    if (!editingAccount) return
+    try {
+      await axios.patch(`/api/accounts/${editingAccount.id}`, {
+        name: editingAccount.name,
+        euid: editingAccount.euid
+      })
+      toast.success('已保存')
+      setEditingAccount(null)
+      loadCookies()
+    } catch (e) {
+      toast.error('保存失败: ' + e.message)
+    }
+  }
+
+  const removeCookie = async (id) => {
+    if (!window.confirm(`删除账号 ${id}？`)) return
+    try {
+      await axios.delete(`/api/accounts/${id}`)
+      toast.success('已删除')
+      loadCookies()
+    } catch (e) {
+      toast.error('删除失败: ' + e.message)
+    }
+  }
+
+  const setPrimaryAccount = async (id) => {
+    try {
+      await axios.post(`/api/accounts/${id}/primary`)
+      toast.success(`${id} 已设为主账号`)
+      loadCookies()
+    } catch (e) {
+      toast.error('设置失败: ' + e.message)
     }
   }
 
@@ -97,49 +170,8 @@ function ConfigPage() {
       </nav>
 
       {/* 请求 tab */}
-      {tab === 'request' && (
-        <div className="card">
-          <div className="field">
-            <label className="field-label" htmlFor="cookie">Cookie</label>
-            <textarea
-              id="cookie"
-              className="textarea"
-              value={config.cookie}
-              onChange={(e) => setConfig({ ...config, cookie: e.target.value })}
-              placeholder="从浏览器开发者工具复制"
-            />
-            <div className="field-hint">失效后接口会返回空列表，重新复制一次即可</div>
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="interval">批量举报间隔</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <input
-                id="interval"
-                className="input"
-                type="number"
-                min="1000"
-                step="500"
-                style={{ width: '120px' }}
-                value={config.interval}
-                onChange={(e) =>
-                  setConfig({ ...config, interval: Number(e.target.value) })
-                }
-              />
-              <span className="field-hint" style={{ marginTop: 0 }}>毫秒 · 太短容易被限制 IP</span>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-            <Button variant="primary" onClick={() => save()} disabled={saving}>
-              {saving ? '保存中…' : '保存设置'}
-            </Button>
-          </div>
-        </div>
-      )}
-
       {/* 监控账号 tab */}
-      {tab === 'accounts' && (
+      {tab === 'monitor' && (
         <div>
           <div className="toolbar">
             <input
@@ -212,6 +244,190 @@ function ConfigPage() {
         </div>
       )}
 
+      {/* 账号 tab（多 cookie 管理） */}
+      {/* 账号 tab（合并：批量举报间隔 + 主账号管理 + 多 cookie 列表） */}
+      {tab === 'accounts' && (
+        <div>
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label className="field-label" htmlFor="interval">批量举报间隔</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <input
+                  id="interval"
+                  className="input"
+                  type="number"
+                  min="1000"
+                  step="500"
+                  style={{ width: '120px' }}
+                  value={config.interval}
+                  onChange={(e) =>
+                    setConfig({ ...config, interval: Number(e.target.value) })
+                  }
+                />
+                <span className="field-hint" style={{ marginTop: 0 }}>毫秒 · 太短容易被限制 IP</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <Button variant="primary" onClick={() => save()} disabled={saving}>
+                {saving ? '保存中…' : '保存设置'}
+              </Button>
+            </div>
+          </div>
+
+          <div className="section-head" style={{ marginBottom: 8 }}>
+            <h2 className="section-title">操作账号</h2>
+            <span className="section-sub">标 ⭐ 的为主账号，所有举报/抓取都使用主账号 cookie</span>
+          </div>
+
+          <div className="toolbar">
+            <input
+              className="input"
+              value={newCookie}
+              onChange={(e) => setNewCookie(e.target.value)}
+              placeholder="粘贴 cookie"
+              style={{ minWidth: 200, flex: 1 }}
+            />
+            <input
+              className="input"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="昵称（可选）"
+              style={{ width: 140 }}
+            />
+            <input
+              className="input"
+              value={newEuidInput}
+              onChange={(e) => setNewEuidInput(e.target.value)}
+              placeholder="euid（如 21291079）"
+              style={{ width: 160 }}
+            />
+            <Button onClick={addCookie}>添加</Button>
+          </div>
+
+          {cookies.length === 0 && <EmptyState title="还没有账号" hint="粘贴 cookie 添加" />}
+
+          {cookies.map((a) => (
+            <div key={a.id} className="account">
+              <div
+                className="avatar-lg"
+                style={{
+                  background: a.primary
+                    ? 'var(--accent-bg)'
+                    : a.id === 'A'
+                    ? 'var(--accent-bg)'
+                    : a.id === 'B'
+                    ? '#e8f5e9'
+                    : a.id === 'C'
+                    ? '#e3f2fd'
+                    : 'var(--bg-2)',
+                  color: a.primary
+                    ? 'var(--accent)'
+                    : a.id === 'A'
+                    ? 'var(--accent)'
+                    : a.id === 'B'
+                    ? '#1f7a4d'
+                    : a.id === 'C'
+                    ? '#1565c0'
+                    : 'var(--text-2)'
+                }}
+              >
+                {a.primary ? '★' : a.id}
+              </div>
+              <div className="account-body">
+                {editingAccount?.id === a.id ? (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <input
+                      className="input"
+                      value={editingAccount.name}
+                      onChange={(e) =>
+                        setEditingAccount({ ...editingAccount, name: e.target.value })
+                      }
+                      placeholder="昵称"
+                      style={{ width: 160 }}
+                    />
+                    <input
+                      className="input"
+                      value={editingAccount.euid}
+                      onChange={(e) =>
+                        setEditingAccount({ ...editingAccount, euid: e.target.value })
+                      }
+                      placeholder="euid"
+                      style={{ width: 160 }}
+                    />
+                    <Button size="sm" variant="primary" onClick={updateCookie}>
+                      保存
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingAccount(null)}>
+                      取消
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="account-name">
+                      {a.name || `账号 ${a.id}`}
+                      {a.primary && (
+                        <span
+                          className="badge"
+                          style={{
+                            marginLeft: 8,
+                            background: 'var(--accent-bg)',
+                            color: 'var(--accent)',
+                            borderColor: 'transparent'
+                          }}
+                        >
+                          ⭐ 主账号
+                        </span>
+                      )}
+                      {a.migrated && !a.primary && (
+                        <span className="badge" style={{ marginLeft: 8 }}>已迁移</span>
+                      )}
+                    </div>
+                    <div className="account-meta">
+                      <span>id: {a.id}</span>
+                      <span className="sep">·</span>
+                      <span>euid: {a.euid || '(未填)'}</span>
+                      <span className="sep">·</span>
+                      <span>{a.cookie}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="account-actions">
+                {!editingAccount && (
+                  <>
+                    {!a.primary && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setPrimaryAccount(a.id)}
+                      >
+                        设为主账号
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" onClick={() => startEdit(a)}>
+                      编辑
+                    </Button>
+                    <Button size="sm" variant="danger" onClick={() => removeCookie(a.id)}>
+                      <Trash />
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {cookies.length > 0 && (
+            <div className="hint" style={{ marginTop: 16, fontSize: 'var(--fs-12)', color: 'var(--text-3)' }}>
+              跨号任务（号间互相点亮/推荐）在 <code>config.interact.pairs</code> 里配置。
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 调度 tab */}
+      {tab === 'schedule' && <ScheduleTab />}
+
       <ConfirmDialog
         open={!!confirmRemove}
         onOpenChange={(o) => !o && setConfirmRemove(null)}
@@ -226,3 +442,193 @@ function ConfigPage() {
 }
 
 export default ConfigPage
+
+/* ===========================================================
+   调度 Tab 子组件
+   =========================================================== */
+function ScheduleTab() {
+  const [board, setBoard] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [running, setRunning] = useState({}) // taskId -> bool
+  const [feedback, setFeedback] = useState(null) // {type, msg}
+
+  const load = async () => {
+    try {
+      const r = await axios.get('/api/scheduler/board')
+      setBoard(r.data.tasks || [])
+    } catch (e) {
+      toast.error('加载失败: ' + e.message)
+    }
+  }
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 5000) // 5s 轮询，让状态实时
+    return () => clearInterval(t)
+  }, [])
+
+  const save = async (id, patch) => {
+    try {
+      await axios.patch(`/api/scheduler/task/${id}`, patch)
+      toast.success('已保存')
+      load()
+    } catch (e) {
+      toast.error('保存失败: ' + e.message)
+    }
+  }
+
+  const runNow = async (id, force) => {
+    setRunning((r) => ({ ...r, [id]: true }))
+    setFeedback(null)
+    try {
+      const res = await axios.post(`/api/scheduler/run/${id}`, { force })
+      const d = res.data
+      if (d.skipped) {
+        if (d.reason === '今日已跑过') {
+          setFeedback({
+            type: 'warn',
+            msg: `「${id}」今天已经跑过了（${d.todayRun?.at}）。如需重跑请勾选"强制重跑"。`
+          })
+        } else {
+          setFeedback({ type: 'info', msg: `${d.reason}` })
+        }
+      } else if (d.success) {
+        setFeedback({
+          type: 'success',
+          msg: `「${id}」跑完了。结果：${JSON.stringify(d.result || {}).slice(0, 200)}`
+        })
+      } else {
+        setFeedback({ type: 'error', msg: `「${id}」跑失败：${d.error}` })
+      }
+      load()
+    } catch (e) {
+      setFeedback({ type: 'error', msg: `「${id}」触发失败：${e.message}` })
+    }
+    setRunning((r) => ({ ...r, [id]: false }))
+  }
+
+  return (
+    <div>
+      {feedback && (
+        <div
+          style={{
+            padding: '12px 14px',
+            borderRadius: 'var(--r-sm)',
+            marginBottom: 16,
+            fontSize: 'var(--fs-13)',
+            background:
+              feedback.type === 'success'
+                ? 'var(--success-bg)'
+                : feedback.type === 'warn'
+                ? 'var(--accent-bg)'
+                : feedback.type === 'error'
+                ? 'var(--danger-bg)'
+                : 'var(--bg-2)',
+            color:
+              feedback.type === 'success'
+                ? 'var(--success)'
+                : feedback.type === 'warn'
+                ? 'var(--accent)'
+                : feedback.type === 'error'
+                ? 'var(--danger)'
+                : 'var(--text)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word'
+          }}
+        >
+          {feedback.msg}
+        </div>
+      )}
+
+      {board.map((t) => (
+        <div key={t.id} className="card" style={{ marginBottom: 12 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 16,
+              flexWrap: 'wrap'
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)' }}>
+                {t.name}
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
+                {t.description}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
+                下次执行: {t.nextRun ? new Date(t.nextRun).toLocaleString('zh-CN') : '—'}
+              </div>
+              {t.ranToday && t.todayRun && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: t.todayRun.success ? 'var(--success)' : 'var(--danger)',
+                    marginTop: 4
+                  }}
+                >
+                  今日 {t.todayRun.at} 已跑完 · {t.todayRun.success ? '✓ 成功' : '✗ 失败'}
+                </div>
+              )}
+              {t.running && (
+                <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4 }}>
+                  ⏳ 正在执行...
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 'var(--fs-13)',
+                  color: 'var(--text-2)'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={t.enabled}
+                  onChange={(e) => save(t.id, { enabled: e.target.checked })}
+                />
+                启用
+              </label>
+
+              <input
+                className="input"
+                type="time"
+                value={t.schedule || ''}
+                onChange={(e) => save(t.id, { schedule: e.target.value })}
+                disabled={!t.enabled}
+                style={{ width: 100 }}
+              />
+
+              <Button
+                onClick={() => runNow(t.id, false)}
+                disabled={t.running || running[t.id]}
+              >
+                {t.running || running[t.id] ? '跑着...' : '立即跑'}
+              </Button>
+              {t.ranToday && (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    if (window.confirm('确定要重新跑一次？（会再调一次虎扑接口）')) {
+                      runNow(t.id, true)
+                    }
+                  }}
+                  disabled={t.running || running[t.id]}
+                >
+                  强制重跑
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
