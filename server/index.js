@@ -5,12 +5,14 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import axios from 'axios'
 import * as cheerio from 'cheerio'
+import { executeAction, executeScraper, ACTIONS, SCRAPERS } from './operations.js'
+import { getTaskStates, runTask, setTaskEnabled, startScheduler } from './scheduler.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const app = express()
-const PORT = 3001
+const PORT = 3002
 
 app.use(cors())
 app.use(express.json())
@@ -157,7 +159,7 @@ app.get('/api/replies/:euid', async (req, res) => {
 
     const url = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${maxTime}&page=${page}&pageSize=${pageSize}`
 
-    console.log('请求URL:', url)
+    console.log(`请求第${page}页，使用maxTime: ${maxTime}`)
 
     const response = await axios.get(url, {
       headers: {
@@ -170,6 +172,8 @@ app.get('/api/replies/:euid', async (req, res) => {
       const replies = response.data.data.replyWithQuoteDtoList || []
       const hasNext = response.data.data.nextPage || false
       const newMaxTime = response.data.data.maxTime || maxTime
+
+      console.log(`第${page}页返回，新的maxTime: ${newMaxTime}`)
 
       res.json({
         euid,
@@ -192,45 +196,59 @@ app.get('/api/replies/:euid', async (req, res) => {
 // 举报接口
 app.post('/api/report', async (req, res) => {
   try {
-    const { tid, pid, topicId } = req.body
     const config = await readConfig()
-
-    const url = `https://bbs.hupu.com/api/v2/threads/${tid}/report`
-
-    const response = await axios.post(url, {
-      tid: String(tid),
-      topicId: String(topicId),
-      type: '4',
-      pid: String(pid),
-      content: '低俗谩骂、阴阳怪气、攻击引战、跨区嘲讽'
-    }, {
-      headers: {
-        'accept': 'application/json, text/plain, */*',
-        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'cache-control': 'no-cache',
-        'content-type': 'application/json',
-        'pragma': 'no-cache',
-        'priority': 'u=1, i',
-        'sec-ch-ua': '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"macOS"',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
-        'cookie': config.cookie,
-        'referer': `https://bbs.hupu.com/${tid}.html`,
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
-      }
-    })
-
-    console.log('举报成功:', { tid, pid, response: response.data })
-    res.json({ success: true, data: response.data, status: 'success' })
+    const { data } = await executeAction('report', req.body, config.cookie)
+    console.log('举报成功:', data)
+    res.json({ success: true, data, status: 'success' })
   } catch (error) {
     console.error('举报失败:', error.response?.data || error.message)
     res.status(error.response?.status || 500).json({
       error: error.message,
       details: error.response?.data,
       status: 'failed'
+    })
+  }
+})
+
+// 通用操作 endpoint
+// body 透传给对应 action 的 body builder
+// 例：POST /api/action/recommend  body={tid, fid, status: 1|0}
+app.post('/api/action/:name', async (req, res) => {
+  const name = req.params.name
+  if (!ACTIONS[name]) {
+    return res.status(404).json({ error: `未知操作: ${name}` })
+  }
+  try {
+    const config = await readConfig()
+    const { data } = await executeAction(name, req.body, config.cookie)
+    console.log(`${ACTIONS[name].label} 成功:`, data)
+    res.json({ success: true, data, status: 'success' })
+  } catch (error) {
+    console.error(`${ACTIONS[name].label} 失败:`, error.response?.data || error.message)
+    res.status(error.response?.status || 500).json({
+      error: error.message,
+      details: error.response?.data,
+      status: 'failed'
+    })
+  }
+})
+
+// 抓取端点（GET + cheerio 解析）
+// 例：POST /api/scrape/threads body={url?} → 帖子列表
+//     POST /api/scrape/replies body={tid}  → 单帖评论
+app.post('/api/scrape/:name', async (req, res) => {
+  const name = req.params.name
+  if (!SCRAPERS[name]) {
+    return res.status(404).json({ error: `未知抓取器: ${name}` })
+  }
+  try {
+    const result = await executeScraper(name, req.body || {})
+    res.json({ success: true, ...result })
+  } catch (error) {
+    console.error(`${SCRAPERS[name].label} 失败:`, error.message)
+    res.status(error.status || 500).json({
+      error: error.message,
+      success: false
     })
   }
 })
@@ -250,6 +268,7 @@ app.post('/api/save-progress', async (req, res) => {
   try {
     const progress = await readProgress()
     const { euid, page, maxTime } = req.body
+    console.log(`保存进度 - euid: ${euid}, page: ${page}, maxTime: ${maxTime}`)
     progress[euid] = { page, maxTime }
     await saveProgress(progress)
     res.json({ success: true })
@@ -466,31 +485,10 @@ app.post('/api/fetch-report-stats', async (req, res) => {
             // 判断是否举报成功
             const isSuccess = item.content.includes('个人声望：+1（单日奖励上限为10声望）')
 
-            // 从内容中提取被举报用户的用户名
-            // 格式可能是: "你对用户 xxx 的回复..." 或 "你对回复'xxx'的举报..."
-            let targetUsername = null
-
-            // 尝试多种匹配模式
-            const patterns = [
-              /你对用户\s*[「『]?([^」』\s]+)[」』]?\s*的回复/,
-              /你对\s*[「『]?([^」』\s]+)[」』]?\s*的回复/,
-              /对用户\s*[「『]?([^」』\s]+)[」』]?\s*的举报/,
-              /用户\s*[「『]?([^」』\s]+)[」』]?\s*的回帖/
-            ]
-
-            for (const pattern of patterns) {
-              const match = item.content.match(pattern)
-              if (match) {
-                targetUsername = match[1]
-                break
-              }
-            }
-
             allReports.push({
               content: item.content,
               createTime: item.createTime,
-              isSuccess,
-              targetUsername
+              isSuccess
             })
           })
 
@@ -583,6 +581,36 @@ app.get('/api/stats', async (req, res) => {
   }
 })
 
+/* ===========================================================
+   调度器 API
+   =========================================================== */
+app.get('/api/scheduler/tasks', (req, res) => {
+  res.json({ tasks: getTaskStates() })
+})
+
+app.post('/api/scheduler/run/:id', async (req, res) => {
+  try {
+    const out = await runTask(req.params.id)
+    res.json({ success: true, ...out })
+  } catch (error) {
+    res.status(error.status || 500).json({ success: false, error: error.message })
+  }
+})
+
+app.patch('/api/scheduler/task/:id', (req, res) => {
+  try {
+    const { enabled } = req.body || {}
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: '需要 enabled: boolean' })
+    }
+    const t = setTaskEnabled(req.params.id, enabled)
+    res.json({ success: true, task: { id: t.id, enabled: t.enabled } })
+  } catch (error) {
+    res.status(404).json({ error: error.message })
+  }
+})
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)
+  startScheduler()
 })

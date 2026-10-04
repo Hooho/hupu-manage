@@ -1,6 +1,31 @@
-node_modules
-dist
-server/data
-.env
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# Logs
 *.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
 .DS_Store
+
+# Env
+.env
+.env.local
+
+# Data (用户本地数据，不入库)
+server/data/
+
+# 截图与预览产物（开发过程产物）
+.preview-shots/
+preview-*.html
+preview-*.png
+preview-compare*.html
+
+# 调试用临时脚本
+.inspect-*.mjs
+.test-*.mjs
