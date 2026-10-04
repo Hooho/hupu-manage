@@ -29,3 +29,10 @@ preview-compare*.html
 # 调试用临时脚本
 .inspect-*.mjs
 .test-*.mjs
+.probe*.mjs
+.check-*.mjs
+.find-*.mjs
+.show-*.mjs
+.nav-to-*.html
+*示图*.md
+*显示*.md

@@ -85,6 +85,37 @@ export const ACTIONS = {
       deviceId: p.deviceId || ''
     }),
     referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+  },
+
+  createReply: {
+    label: '回复帖子',
+    url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/createReply',
+    body: (p) => ({
+      topicId: String(p.topicId),
+      content: p.content, // 已包含 HTML 标签，如 <p>...</p>
+      shumeiId: p.shumeiId || p.deviceId || '',
+      deviceid: p.deviceId || p.shumeiId || '',
+      tid: p.tid
+    }),
+    referer: (p) => `https://bbs.hupu.com/${p.tid}-1.html`
+  },
+
+  deleteReply: {
+    // URL 已确认（200 不是 404）。body 字段名需要在浏览器 hover 看 Network 确认。
+    label: '删除回复',
+    url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/reply/delete',
+    body: (p) => {
+      const pid = String(p.pid)
+      // 保守覆盖多种字段命名，等用户验证后精简
+      const base = { tid: p.tid, type: 1, reason: 1 }
+      return {
+        ...base,
+        pid,
+        pids: [pid],
+        replyId: pid
+      }
+    },
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
   }
 }
 
@@ -149,15 +180,34 @@ export const SCRAPERS = {
   },
 
   /**
-   * 抓取帖子详情 + 评论（从 Next.js __NEXT_DATA__ 提取，最稳定）
-   * params: { tid: string }
-   * 返回：
-   *   {
-   *     tid, title, fid,                    // 帖子信息
-   *     thread: { tid, authorId, content }, // 主楼
-   *     items: [{ pid, puid, username, content, floor, createdAt }] // 回复
-   *   }
+   * 抓取某个号（按 euid）的最近回复/帖子列表
+   * params: { euid: string, pageSize?: number }
+   * 用 pcmapi/pc/space/v1/getReplyList（带 maxTime）
+   * 返回：[{ tid, pid, puid, content, formatTime }]
    */
+  userContent: {
+    label: '抓取某用户的内容',
+    async run({ euid, pageSize = 5 }) {
+      if (!euid) throw new Error('缺少 euid')
+      const maxTime = Date.now()
+      const url = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${maxTime}&page=1&pageSize=${pageSize}`
+      const res = await axios.get(url, {
+        headers: { 'user-agent': UA },
+        timeout: 12000
+      })
+      const data = res.data?.data || {}
+      const list = data.replyWithQuoteDtoList || []
+      const items = list.map((r) => ({
+        tid: r.tid,
+        pid: r.pid,
+        puid: r.puid,
+        content: stripHtml(r.content || ''),
+        formatTime: r.formatTime || ''
+      }))
+      return { euid, source: url, count: items.length, items }
+    }
+  },
+
   replies: {
     label: '抓取帖子评论',
     async run({ tid }) {
