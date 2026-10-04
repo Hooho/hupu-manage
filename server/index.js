@@ -6,7 +6,8 @@ import { fileURLToPath } from 'url'
 import axios from 'axios'
 import * as cheerio from 'cheerio'
 import { executeAction, executeScraper, ACTIONS, SCRAPERS } from './operations.js'
-import { getTaskStates, runTask, setTaskEnabled, startScheduler } from './scheduler.js'
+import { getTaskStates, getBoard, runTask, setTaskConfig, startScheduler } from './scheduler.js'
+import { readAccounts, addAccount, removeAccount, updateAccount, getAccount, getPrimaryCookie, setPrimaryAccount } from './storage.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -140,10 +141,10 @@ app.post('/api/config', async (req, res) => {
 app.get('/api/replies/:euid', async (req, res) => {
   try {
     const { euid } = req.params
-    const config = await readConfig()
+    const cookie = await getPrimaryCookie()
 
-    if (!config.cookie) {
-      return res.status(400).json({ error: '请先配置 Cookie' })
+    if (!cookie) {
+      return res.status(400).json({ error: '请先在「账号」tab 配置主账号 Cookie' })
     }
 
     const progress = await readProgress()
@@ -163,7 +164,7 @@ app.get('/api/replies/:euid', async (req, res) => {
 
     const response = await axios.get(url, {
       headers: {
-        'cookie': config.cookie,
+        'cookie': cookie,
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
       }
     })
@@ -193,11 +194,12 @@ app.get('/api/replies/:euid', async (req, res) => {
   }
 })
 
-// 举报接口
+// 举报接口（使用主账号 cookie）
 app.post('/api/report', async (req, res) => {
   try {
-    const config = await readConfig()
-    const { data } = await executeAction('report', req.body, config.cookie)
+    const cookie = await getPrimaryCookie()
+    if (!cookie) return res.status(400).json({ error: '未配置主账号 Cookie' })
+    const { data } = await executeAction('report', req.body, cookie)
     console.log('举报成功:', data)
     res.json({ success: true, data, status: 'success' })
   } catch (error) {
@@ -219,8 +221,9 @@ app.post('/api/action/:name', async (req, res) => {
     return res.status(404).json({ error: `未知操作: ${name}` })
   }
   try {
-    const config = await readConfig()
-    const { data } = await executeAction(name, req.body, config.cookie)
+    const cookie = await getPrimaryCookie()
+    if (!cookie) return res.status(400).json({ error: '未配置主账号 Cookie' })
+    const { data } = await executeAction(name, req.body, cookie)
     console.log(`${ACTIONS[name].label} 成功:`, data)
     res.json({ success: true, data, status: 'success' })
   } catch (error) {
@@ -287,13 +290,13 @@ app.get('/api/users', async (req, res) => {
 app.post('/api/fetch-user-info', async (req, res) => {
   try {
     const { euid } = req.body
-    const config = await readConfig()
+    const cookie = await getPrimaryCookie()
 
     const url = `https://my.hupu.com/${euid}?tabKey=2`
 
     const response = await axios.get(url, {
       headers: {
-        'cookie': config.cookie,
+        'cookie': cookie,
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
       }
     })
@@ -373,10 +376,10 @@ app.post('/api/fetch-user-info', async (req, res) => {
 app.post('/api/report-results', async (req, res) => {
   try {
     const { page = 1 } = req.body
-    const config = await readConfig()
+    const cookie = await getPrimaryCookie()
 
-    if (!config.cookie) {
-      return res.status(400).json({ error: '请先配置 Cookie' })
+    if (!cookie) {
+      return res.status(400).json({ error: '请先配置主账号 Cookie' })
     }
 
     const response = await axios.post('https://my.hupu.com/pcmapi/pc/space/v1/pm/getPmDetail', {
@@ -399,7 +402,7 @@ app.post('/api/report-results', async (req, res) => {
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-origin',
-        'cookie': config.cookie,
+        'cookie': cookie,
         'referer': 'https://my.hupu.com/personalMessage',
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
       }
@@ -447,10 +450,10 @@ app.post('/api/report-results', async (req, res) => {
 // 统计举报结果
 app.post('/api/fetch-report-stats', async (req, res) => {
   try {
-    const config = await readConfig()
+    const cookie = await getPrimaryCookie()
 
-    if (!config.cookie) {
-      return res.status(400).json({ error: '请先配置 Cookie' })
+    if (!cookie) {
+      return res.status(400).json({ error: '请先配置主账号 Cookie' })
     }
 
     // 获取所有举报结果
@@ -472,7 +475,7 @@ app.post('/api/fetch-report-stats', async (req, res) => {
           headers: {
             'accept': '*/*',
             'content-type': 'application/json;charset=UTF-8',
-            'cookie': config.cookie,
+            'cookie': cookie,
             'referer': 'https://my.hupu.com/personalMessage',
             'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
           }
@@ -584,27 +587,86 @@ app.get('/api/stats', async (req, res) => {
 /* ===========================================================
    调度器 API
    =========================================================== */
+app.get('/api/accounts', async (req, res) => {
+  const list = await readAccounts()
+  // 隐藏 cookie 字段，只返回前 12 位 + ...
+  const masked = list.map((a) => ({
+    ...a,
+    cookie: a.cookie ? `${a.cookie.slice(0, 12)}...${a.cookie.slice(-8)}` : ''
+  }))
+  res.json({ accounts: masked })
+})
+
+app.post('/api/accounts', async (req, res) => {
+  try {
+    const account = await addAccount(req.body || {})
+    res.json({ success: true, account: { ...account, cookie: '***' } })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+app.patch('/api/accounts/:id', async (req, res) => {
+  const updated = await updateAccount(req.params.id, req.body || {})
+  if (!updated) return res.status(404).json({ error: '账号不存在' })
+  res.json({ success: true, account: { ...updated, cookie: '***' } })
+})
+
+app.delete('/api/accounts/:id', async (req, res) => {
+  const list = await removeAccount(req.params.id)
+  res.json({ success: true, accounts: list.map((a) => ({ ...a, cookie: '***' })) })
+})
+
+// 设为主账号（其余自动取消）
+app.post('/api/accounts/:id/primary', async (req, res) => {
+  try {
+    const account = await setPrimaryAccount(req.params.id)
+    res.json({ success: true, account: { ...account, cookie: '***' } })
+  } catch (e) {
+    res.status(404).json({ error: e.message })
+  }
+})
+
+/* ===========================================================
+   调度器 API
+   =========================================================== */
 app.get('/api/scheduler/tasks', (req, res) => {
   res.json({ tasks: getTaskStates() })
 })
 
+// 详情版（带 schedule / enabled / 今日是否已跑）
+app.get('/api/scheduler/board', async (req, res) => {
+  try {
+    const tasks = await getBoard()
+    res.json({ tasks })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.post('/api/scheduler/run/:id', async (req, res) => {
   try {
-    const out = await runTask(req.params.id)
+    const force = req.body?.force || req.query.force === '1'
+    const out = await runTask(req.params.id, { force })
     res.json({ success: true, ...out })
   } catch (error) {
     res.status(error.status || 500).json({ success: false, error: error.message })
   }
 })
 
-app.patch('/api/scheduler/task/:id', (req, res) => {
+app.patch('/api/scheduler/task/:id', async (req, res) => {
   try {
-    const { enabled } = req.body || {}
-    if (typeof enabled !== 'boolean') {
-      return res.status(400).json({ error: '需要 enabled: boolean' })
+    const { enabled, schedule } = req.body || {}
+    const patch = {}
+    if (typeof enabled === 'boolean') patch.enabled = enabled
+    if (typeof schedule === 'string' && /^\d{2}:\d{2}$/.test(schedule)) {
+      patch.schedule = schedule
     }
-    const t = setTaskEnabled(req.params.id, enabled)
-    res.json({ success: true, task: { id: t.id, enabled: t.enabled } })
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: '需要 enabled:boolean 或 schedule:HH:MM' })
+    }
+    const r = await setTaskConfig(req.params.id, patch)
+    res.json({ success: true, config: r })
   } catch (error) {
     res.status(404).json({ error: error.message })
   }
