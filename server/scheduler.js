@@ -100,12 +100,17 @@ async function dailyPostLightTask(ctx) {
 /**
  * 号与号之间互相点亮 + 推荐
  * 配置示例（config.interact.pairs）：
- *   [{ from: "A", to: "B", recommendTimes: 8, lightTimes: 8, intervalMs: 2000 }]
- * 步骤（每对 from → to）：
- *   1. 用 from.cookie，抓 to 的最近一条内容（用 SCRAPERS.userContent，按 euid）
- *      → 拿到 (tid, pid, puid)
- *   2. 给这条帖子推荐 + 取消 × recommendTimes 次
- *   3. 给这条评论点亮 × lightTimes 次（toggle）
+ *   [{
+ *     from: "A", to: "B",
+ *     threadCount: 3,             // 每对抓对方最近 N 条内容（默认 3）
+ *     recommendTimes: 8,          // 每条内容推荐+取消次数（默认 8）
+ *     lightTimes: 8,              // 每条评论点亮次数（默认 8）
+ *     intervalMs: 2000
+ *   }]
+ * 步骤（每对 from → to，每条内容）：
+ *   1. 抓 to 的最近 threadCount 条内容（SCRAPERS.userContent）
+ *   2. 每条：推荐 status=1 → 取消 status=0，循环 recommendTimes 次
+ *   3. 每条评论（pid）：点亮 lightTimes 次（toggle）
  */
 async function crossAccountInteractTask(ctx) {
   const { accounts, log } = ctx
@@ -131,73 +136,93 @@ async function crossAccountInteractTask(ctx) {
       continue
     }
 
-    const recTimes = pair.recommendTimes ?? 8
-    const lightTimes = pair.lightTimes ?? 8
+    const recTimes = pair.recommendTimes ?? 3
+    const lightTimes = pair.lightTimes ?? 3
+    const threadCount = pair.threadCount ?? 1
     const interval = pair.intervalMs ?? 2000
 
-    log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}）`)
-    let recOk = 0
-    let lightOk = 0
-    let targetTid = null
-    let targetPid = null
-    let targetPuid = null
+    log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}） · 抓 ${threadCount} 条内容`)
 
-    // 1. 抓目标账号的内容
+    // 1. 抓目标账号的内容（取 threadCount 条）
+    let items = []
     try {
-      const content = await executeScraper('userContent', { euid: to.euid, pageSize: 5 })
-      const items = content.items || []
+      const content = await executeScraper('userContent', { euid: to.euid, pageSize: Math.max(threadCount, 5) })
+      items = (content.items || []).slice(0, threadCount)
       if (items.length === 0) {
         log(`  ✗ ${to.id} 没有可操作的内容`)
         results.push({ pair, recommendOk: 0, lightOk: 0, reason: 'no content' })
         continue
       }
-      const target = items[0]
-      targetTid = target.tid
-      targetPid = target.pid
-      targetPuid = target.puid
-      log(`  目标: tid=${targetTid} pid=${targetPid} "${target.content.slice(0, 30)}"`)
+      log(`  抓到 ${items.length} 条内容`)
     } catch (e) {
       log(`  ✗ 抓内容失败: ${e.message}`)
       results.push({ pair, recommendOk: 0, lightOk: 0, error: e.message })
       continue
     }
 
-    // 2. 推荐 + 取消 × recTimes
-    for (let i = 0; i < recTimes; i++) {
-      try {
-        await executeAction('recommend', { tid: targetTid, fid: 4860, status: 1 }, from.cookie)
-        log(`  ✓ 推荐 ${i + 1}/${recTimes}`)
-        await sleep(interval)
-        await executeAction('recommend', { tid: targetTid, fid: 4860, status: 0 }, from.cookie)
-        log(`  ✓ 取消 ${i + 1}/${recTimes}`)
-        recOk++
-      } catch (e) {
-        log(`  ✗ 推荐 ${i + 1}/${recTimes} 失败: ${e.message}`)
-      }
-      await sleep(1500)
-    }
+    let pairRecOk = 0
+    let pairLightOk = 0
+    const perThread = []
 
-    // 3. 点亮 × lightTimes（toggle：light 接口是 toggle 行为）
-    if (targetPid && targetPuid) {
-      for (let i = 0; i < lightTimes; i++) {
+    // 2 + 3. 对每条内容做推荐+取消 + 点亮
+    for (let ti = 0; ti < items.length; ti++) {
+      const target = items[ti]
+      const targetTid = target.tid
+      const targetPid = target.pid
+      const targetPuid = target.puid
+      log(`  [${ti + 1}/${items.length}] tid=${targetTid} pid=${targetPid} "${(target.content || '').slice(0, 30)}"`)
+
+      // 推荐 + 取消 × recTimes
+      let recOk = 0
+      for (let i = 0; i < recTimes; i++) {
         try {
-          await executeAction('light', {
-            pid: targetPid,
-            tid: targetTid,
-            puid: targetPuid,
-            fid: 4860,
-            deviceId: ''
-          }, from.cookie)
-          log(`  ✓ 点亮 ${i + 1}/${lightTimes}`)
-          lightOk++
+          await executeAction('recommend', { tid: targetTid, fid: 4860, status: 1 }, from.cookie)
+          await sleep(interval)
+          await executeAction('recommend', { tid: targetTid, fid: 4860, status: 0 }, from.cookie)
+          recOk++
+          log(`    ✓ 推荐 ${i + 1}/${recTimes}`)
         } catch (e) {
-          log(`  ✗ 点亮 ${i + 1}/${lightTimes} 失败: ${e.message}`)
+          log(`    ✗ 推荐 ${i + 1}/${recTimes} 失败: ${e.message}`)
         }
-        await sleep(interval)
+        await sleep(1500)
       }
+
+      // 点亮 × lightTimes（toggle：light 接口是 toggle 行为）
+      let lightOk = 0
+      if (targetPid && targetPuid) {
+        for (let i = 0; i < lightTimes; i++) {
+          try {
+            await executeAction(
+              'light',
+              {
+                pid: targetPid,
+                tid: targetTid,
+                puid: targetPuid,
+                fid: 4860,
+                deviceId: ''
+              },
+              from.cookie
+            )
+            log(`    ✓ 点亮 ${i + 1}/${lightTimes}`)
+            lightOk++
+          } catch (e) {
+            log(`    ✗ 点亮 ${i + 1}/${lightTimes} 失败: ${e.message}`)
+          }
+          await sleep(interval)
+        }
+      }
+      perThread.push({ tid: targetTid, pid: targetPid, recommendOk: recOk, lightOk })
     }
 
-    results.push({ pair, recommendOk: recOk, lightOk })
+    pairRecOk = perThread.reduce((s, t) => s + t.recommendOk, 0)
+    pairLightOk = perThread.reduce((s, t) => s + t.lightOk, 0)
+    results.push({
+      pair: { from: from.id, to: to.id },
+      threadCount: items.length,
+      recommendOk: pairRecOk,
+      lightOk: pairLightOk,
+      perThread
+    })
   }
 
   log('互相操作完成')
