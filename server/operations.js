@@ -87,6 +87,19 @@ export const ACTIONS = {
     referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
   },
 
+  unlight: {
+    label: '取消点亮评论',
+    url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/reply/cancelLight',
+    body: (p) => ({
+      pid: p.pid,
+      tid: p.tid,
+      puid: p.puid,
+      fid: p.fid,
+      deviceId: p.deviceId || ''
+    }),
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+  },
+
   createReply: {
     label: '回复帖子',
     url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/createReply',

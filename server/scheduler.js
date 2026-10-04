@@ -187,7 +187,7 @@ async function crossAccountInteractTask(ctx) {
         await sleep(1500)
       }
 
-      // 点亮 × lightTimes（toggle：light 接口是 toggle 行为）
+      // 点亮 → 取消点亮（× lightTimes：每次都先 light 再 unlight，最终是"灭"）
       let lightOk = 0
       if (targetPid && targetPuid) {
         for (let i = 0; i < lightTimes; i++) {
@@ -204,9 +204,22 @@ async function crossAccountInteractTask(ctx) {
               from.cookie
             )
             log(`    ✓ 点亮 ${i + 1}/${lightTimes}`)
+            await sleep(interval)
+            await executeAction(
+              'unlight',
+              {
+                pid: targetPid,
+                tid: targetTid,
+                puid: targetPuid,
+                fid: 4860,
+                deviceId: ''
+              },
+              from.cookie
+            )
+            log(`    ✓ 取消 ${i + 1}/${lightTimes}`)
             lightOk++
           } catch (e) {
-            log(`    ✗ 点亮 ${i + 1}/${lightTimes} 失败: ${e.message}`)
+            log(`    ✗ 点亮/取消 ${i + 1}/${lightTimes} 失败: ${e.message}`)
           }
           await sleep(interval)
         }
