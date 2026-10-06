@@ -455,7 +455,43 @@ const LOG_LEVEL_COLOR = {
   err: 'var(--danger)'
 }
 
-function LogList({ entries }) {
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * 在日志文本中把已知账号名加粗渲染。
+ * 用「非汉字字符」作为边界，避免误匹配类似「水啦啦」。
+ * @param {string} text
+ * @param {string[]} names
+ * @returns {Array|string} React 元素数组 或 原文本
+ */
+function boldify(text, names) {
+  if (!names || names.length === 0) return text
+  const valid = names.filter(Boolean)
+  if (valid.length === 0) return text
+  // 名字长的优先匹配（避免「A」被「AA」先匹配）
+  const sorted = [...valid].sort((a, b) => b.length - a.length)
+  const re = new RegExp(
+    `(^|[^\\u4e00-\\u9fff])(${sorted.map(escapeRegex).join('|')})(?=$|[^\\u4e00-\\u9fff])`,
+    'g'
+  )
+  const parts = []
+  let last = 0
+  let m
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    if (m[1]) parts.push(m[1])
+    parts.push(
+      <strong key={parts.length} style={{ fontWeight: 700 }}>
+        {m[2]}
+      </strong>
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length ? parts : text
+}
+
+function LogList({ entries, names }) {
   if (!entries || entries.length === 0) return null
   return (
     <div
@@ -480,7 +516,7 @@ function LogList({ entries }) {
             wordBreak: 'break-word'
           }}
         >
-          {e.line}
+          {boldify(e.line, names)}
         </div>
       ))}
     </div>
@@ -492,6 +528,7 @@ function ScheduleTab() {
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState({}) // taskId -> bool
   const [feedback, setFeedback] = useState(null) // {type, msg}
+  const [accountNames, setAccountNames] = useState([]) // 用于日志加粗
 
   const load = async () => {
     try {
@@ -502,8 +539,19 @@ function ScheduleTab() {
     }
   }
 
+  const loadAccountNames = async () => {
+    try {
+      const r = await axios.get('/api/accounts')
+      const names = (r.data.accounts || []).map((a) => a.name).filter(Boolean)
+      setAccountNames(names)
+    } catch {
+      // 静默失败：没拿到 names 就当普通文本渲染
+    }
+  }
+
   useEffect(() => {
     load()
+    loadAccountNames()
     const t = setInterval(load, 5000) // 5s 轮询，让状态实时
     return () => clearInterval(t)
   }, [])
@@ -723,7 +771,7 @@ function ScheduleTab() {
                     复制
                   </button>
                 </summary>
-                <LogList entries={entries} />
+                <LogList entries={entries} names={accountNames} />
               </details>
             )}
           </div>
