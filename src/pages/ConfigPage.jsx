@@ -446,6 +446,47 @@ export default ConfigPage
 /* ===========================================================
    调度 Tab 子组件
    =========================================================== */
+
+// 日志级别 → 颜色映射
+const LOG_LEVEL_COLOR = {
+  info: 'var(--text-2)',
+  ok: 'var(--success)',
+  warn: 'var(--accent)',
+  err: 'var(--danger)'
+}
+
+function LogList({ entries }) {
+  if (!entries || entries.length === 0) return null
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: '10px 12px',
+        background: 'var(--bg-2)',
+        borderRadius: 'var(--r-sm)',
+        fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+        fontSize: 12,
+        lineHeight: 1.7,
+        maxHeight: 360,
+        overflowY: 'auto'
+      }}
+    >
+      {entries.map((e, i) => (
+        <div
+          key={i}
+          style={{
+            color: LOG_LEVEL_COLOR[e.level] || 'var(--text-2)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word'
+          }}
+        >
+          {e.line}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ScheduleTab() {
   const [board, setBoard] = useState([])
   const [loading, setLoading] = useState(false)
@@ -493,9 +534,10 @@ function ScheduleTab() {
           setFeedback({ type: 'info', msg: `${d.reason}` })
         }
       } else if (d.success) {
+        const counts = countLogs(d.logEntries || [])
         setFeedback({
           type: 'success',
-          msg: `「${id}」跑完了。结果：${JSON.stringify(d.result || {}).slice(0, 200)}`
+          msg: `「${id}」跑完了。真成功 ${counts.ok} 条 · 幂等 ${counts.warn} 条 · 失败 ${counts.err} 条`
         })
       } else {
         setFeedback({ type: 'error', msg: `「${id}」跑失败：${d.error}` })
@@ -505,6 +547,14 @@ function ScheduleTab() {
       setFeedback({ type: 'error', msg: `「${id}」触发失败：${e.message}` })
     }
     setRunning((r) => ({ ...r, [id]: false }))
+  }
+
+  const copyLogs = (entries) => {
+    const text = (entries || []).map((e) => e.line).join('\n')
+    navigator.clipboard?.writeText(text).then(
+      () => toast.success('已复制日志'),
+      () => toast.error('复制失败')
+    )
   }
 
   return (
@@ -540,95 +590,153 @@ function ScheduleTab() {
         </div>
       )}
 
-      {board.map((t) => (
-        <div key={t.id} className="card" style={{ marginBottom: 12 }}>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              justifyContent: 'space-between',
-              gap: 16,
-              flexWrap: 'wrap'
-            }}
-          >
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)' }}>
-                {t.name}
+      {board.map((t) => {
+        const entries = t.lastResult?.logEntries || []
+        const counts = countLogs(entries)
+        return (
+          <div key={t.id} className="card" style={{ marginBottom: 12 }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 16,
+                flexWrap: 'wrap'
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)' }}>
+                  {t.name}
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
+                  {t.description}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
+                  下次执行: {t.nextRun ? new Date(t.nextRun).toLocaleString('zh-CN') : '—'}
+                </div>
+                {t.ranToday && t.todayRun && (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: t.todayRun.success ? 'var(--success)' : 'var(--danger)',
+                      marginTop: 4
+                    }}
+                  >
+                    今日 {t.todayRun.at} 已跑完 · {t.todayRun.success ? '✓ 成功' : '✗ 失败'}
+                  </div>
+                )}
+                {t.running && (
+                  <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4 }}>
+                    ⏳ 正在执行...
+                  </div>
+                )}
               </div>
-              <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
-                {t.description}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
-                下次执行: {t.nextRun ? new Date(t.nextRun).toLocaleString('zh-CN') : '—'}
-              </div>
-              {t.ranToday && t.todayRun && (
-                <div
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <label
                   style={{
-                    fontSize: 12,
-                    color: t.todayRun.success ? 'var(--success)' : 'var(--danger)',
-                    marginTop: 4
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 'var(--fs-13)',
+                    color: 'var(--text-2)'
                   }}
                 >
-                  今日 {t.todayRun.at} 已跑完 · {t.todayRun.success ? '✓ 成功' : '✗ 失败'}
-                </div>
-              )}
-              {t.running && (
-                <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4 }}>
-                  ⏳ 正在执行...
-                </div>
-              )}
-            </div>
+                  <input
+                    type="checkbox"
+                    checked={t.enabled}
+                    onChange={(e) => save(t.id, { enabled: e.target.checked })}
+                  />
+                  启用
+                </label>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <label
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 'var(--fs-13)',
-                  color: 'var(--text-2)'
-                }}
-              >
                 <input
-                  type="checkbox"
-                  checked={t.enabled}
-                  onChange={(e) => save(t.id, { enabled: e.target.checked })}
+                  className="input"
+                  type="time"
+                  value={t.schedule || ''}
+                  onChange={(e) => save(t.id, { schedule: e.target.value })}
+                  disabled={!t.enabled}
+                  style={{ width: 100 }}
                 />
-                启用
-              </label>
 
-              <input
-                className="input"
-                type="time"
-                value={t.schedule || ''}
-                onChange={(e) => save(t.id, { schedule: e.target.value })}
-                disabled={!t.enabled}
-                style={{ width: 100 }}
-              />
-
-              <Button
-                onClick={() => runNow(t.id, false)}
-                disabled={t.running || running[t.id]}
-              >
-                {t.running || running[t.id] ? '跑着...' : '立即跑'}
-              </Button>
-              {t.ranToday && (
                 <Button
-                  variant="ghost"
-                  onClick={() => {
-                    if (window.confirm('确定要重新跑一次？（会再调一次虎扑接口）')) {
-                      runNow(t.id, true)
-                    }
-                  }}
+                  onClick={() => runNow(t.id, false)}
                   disabled={t.running || running[t.id]}
                 >
-                  强制重跑
+                  {t.running || running[t.id] ? '跑着...' : '立即跑'}
                 </Button>
-              )}
+                {t.ranToday && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      if (window.confirm('确定要重新跑一次？（会再调一次虎扑接口）')) {
+                        runNow(t.id, true)
+                      }
+                    }}
+                    disabled={t.running || running[t.id]}
+                  >
+                    强制重跑
+                  </Button>
+                )}
+              </div>
             </div>
+
+            {/* 上次执行日志 */}
+            {entries.length > 0 && (
+              <details style={{ marginTop: 12 }} open>
+                <summary
+                  style={{
+                    cursor: 'pointer',
+                    fontSize: 'var(--fs-13)',
+                    color: 'var(--text-2)',
+                    userSelect: 'none',
+                    listStyle: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10
+                  }}
+                >
+                  <span style={{ display: 'inline-block', transition: 'transform 120ms' }} className="caret">
+                    ▸
+                  </span>
+                  <span>上次执行日志 · 共 {entries.length} 条</span>
+                  <span style={{ color: 'var(--success)' }}>真成功 {counts.ok}</span>
+                  <span style={{ color: 'var(--accent)' }}>幂等 {counts.warn}</span>
+                  <span style={{ color: 'var(--danger)' }}>失败 {counts.err}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      copyLogs(entries)
+                    }}
+                    style={{
+                      marginLeft: 'auto',
+                      background: 'transparent',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-2)',
+                      borderRadius: 'var(--r-sm)',
+                      padding: '2px 8px',
+                      fontSize: 12,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    复制
+                  </button>
+                </summary>
+                <LogList entries={entries} />
+              </details>
+            )}
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
+}
+
+function countLogs(entries) {
+  const c = { ok: 0, warn: 0, err: 0, info: 0 }
+  for (const e of entries || []) {
+    if (c[e.level] != null) c[e.level]++
+  }
+  return c
 }

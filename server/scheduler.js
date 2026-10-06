@@ -17,33 +17,50 @@ import { readConfig, readAccounts, readTaskSchedules } from './storage.js'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /**
+ * 把 executeAction 的结果格式化成可读字符串
+ *   ✓ 真成功
+ *   ⚡ 幂等（reason / internalCode）
+ *   ✗ 失败（reason / internalCode）
+ */
+function actionResult(r) {
+  if (r.idempotent) {
+    const why = r.data?.internalCode
+      ? `${r.reason || ''} [${r.data.internalCode}]`
+      : r.reason || ''
+    return `⚡ 幂等${why ? `（${why}）` : ''}`
+  }
+  return '✓ 真成功'
+}
+
+/**
  * 单个号的"推荐 + 点赞"流程（nba.hupu.com 抓取版）
  * accounts 参数：[{id, cookie, euid}]，跑每个号
  */
 async function singleAccountDailyFlow(account, log, opts = {}) {
-  const { cookie } = account
+  const { cookie, name, euid } = account
   const TARGET_LIGHTS = opts.lightTarget || 10
   const TARGET_THREADS = opts.threadTarget || 8
   const recInterval = opts.recommendInterval || 2000
   const lightInterval = opts.lightInterval || 1500
 
-  log(`▶ 账号 ${account.id}（${account.name || '匿名'}）`)
+  log(`▶ 账号 ${account.id}（${name || '匿名'} euid=${euid || '?'}）`)
   const listRes = await executeScraper('threads', { url: 'https://nba.hupu.com/' })
   const threads = (listRes.items || []).slice(0, TARGET_THREADS)
-  log(`  抓到 ${threads.length} 条帖子`)
+  log(`  → 抓取了 NBA 列表 ${threads.length} 条帖子`, 'info')
 
   let recOk = 0
   for (const t of threads) {
+    const fid = Number(t.board) || 4860
+    log(`  → 处理帖子 tid=${t.tid} fid=${fid} "${(t.title || '').slice(0, 30)}"`, 'info')
     try {
-      const fid = Number(t.board) || 4860
-      await executeAction('recommend', { tid: t.tid, fid, status: 1 }, cookie)
-      log(`  ✓ 推荐 ${t.tid} (${t.title.slice(0, 24)})`)
+      const r1 = await executeAction('recommend', { tid: t.tid, fid, status: 1 }, cookie)
+      log(`    推荐 状态 未→是 ${actionResult(r1)}`, r1.idempotent ? 'warn' : 'ok')
       await sleep(recInterval)
-      await executeAction('recommend', { tid: t.tid, fid, status: 0 }, cookie)
-      log(`  ✓ 取消 ${t.tid}`)
+      const r2 = await executeAction('recommend', { tid: t.tid, fid, status: 0 }, cookie)
+      log(`    取消推荐 状态 是→未 ${actionResult(r2)}`, r2.idempotent ? 'warn' : 'ok')
       recOk++
     } catch (e) {
-      log(`  ✗ ${t.tid} 失败: ${e.message}`)
+      log(`  ✗ 推荐 ${t.tid} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
     }
     await sleep(1500)
   }
@@ -52,26 +69,33 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
   let cursor = 0
   while (lightOk < TARGET_LIGHTS && cursor < threads.length) {
     const t = threads[cursor++]
-    log(`▶ 抓取 ${t.tid} 评论`)
+    log(`▶ 抓取帖子 tid=${t.tid} 的评论`, 'info')
     try {
       const repRes = await executeScraper('replies', { tid: t.tid })
       const comments = repRes.items || []
-      log(`  抓到 ${comments.length} 条（已点赞 ${lightOk}/${TARGET_LIGHTS}）`)
       const fid = Number(t.board) || repRes.fid || 4860
+      log(`  → 共抓到 ${comments.length} 条评论（已点亮 ${lightOk}/${TARGET_LIGHTS}）`, 'info')
       for (const c of comments) {
         if (lightOk >= TARGET_LIGHTS) break
         if (!c.pid || !c.puid) continue
         try {
-          await executeAction('light', { pid: c.pid, tid: t.tid, puid: c.puid, fid, deviceId: '' }, cookie)
-          log(`  ✓ ${lightOk + 1}/${TARGET_LIGHTS} 点赞 ${c.pid} (${c.username || '匿名'})`)
+          const lr = await executeAction(
+            'light',
+            { pid: c.pid, tid: t.tid, puid: c.puid, fid, deviceId: '' },
+            cookie
+          )
+          log(
+            `    点亮 pid=${c.pid} 作者=${c.username || 'uid:' + c.puid} (puid=${c.puid}) "${(c.content || '').slice(0, 30)}" → ${actionResult(lr)}`,
+            lr.idempotent ? 'warn' : 'ok'
+          )
           lightOk++
         } catch (e) {
-          log(`  ✗ 点赞 ${c.pid} 失败: ${e.message}`)
+          log(`    ✗ 点亮 pid=${c.pid} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
         }
         await sleep(lightInterval)
       }
     } catch (e) {
-      log(`  ✗ 抓评论失败: ${e.message}`)
+      log(`  ✗ 抓评论失败: ${e.message}`, 'err')
     }
   }
 
@@ -128,11 +152,11 @@ async function crossAccountInteractTask(ctx) {
     const from = accountById(pair.from)
     const to = accountById(pair.to)
     if (!from || !to) {
-      log(`✗ 跳过配对 ${pair.from}→${pair.to}（账号未找到）`)
+      log(`✗ 跳过配对 ${pair.from}→${pair.to}（账号未找到）`, 'err')
       continue
     }
     if (!to.euid) {
-      log(`✗ 跳过配对 ${pair.from}→${pair.to}（目标账号缺 euid）`)
+      log(`✗ 跳过配对 ${pair.from}→${pair.to}（目标账号缺 euid）`, 'err')
       continue
     }
 
@@ -140,7 +164,7 @@ async function crossAccountInteractTask(ctx) {
     const lightTimes = pair.lightTimes ?? 3
     const interval = pair.intervalMs ?? 2000
 
-    log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}）`)
+    log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}，euid=${to.euid}）`, 'info')
 
     // 1. 抓目标账号的主题帖列表（用 from 的 cookie 登录态去抓）
     let threads = []
@@ -148,13 +172,13 @@ async function crossAccountInteractTask(ctx) {
       const t = await executeScraper('userThreads', { euid: to.euid, pageSize: 5, cookie: from.cookie })
       threads = t.items || []
       if (threads.length === 0) {
-        log(`  ✗ ${to.id} 没有主题帖`)
+        log(`  ✗ ${to.id} 没有主题帖`, 'err')
         results.push({ pair: { from: from.id, to: to.id }, recommendOk: 0, lightOk: 0, reason: 'no thread' })
         continue
       }
-      log(`  抓到 ${threads.length} 个主题帖`)
+      log(`  → ${from.id} 用自己的 cookie 抓取了 ${to.name} 的 ${threads.length} 条主题帖`, 'info')
     } catch (e) {
-      log(`  ✗ 抓主题帖失败: ${e.message}`)
+      log(`  ✗ 抓主题帖失败: ${e.message}`, 'err')
       results.push({ pair: { from: from.id, to: to.id }, recommendOk: 0, lightOk: 0, error: e.message })
       continue
     }
@@ -162,31 +186,43 @@ async function crossAccountInteractTask(ctx) {
     const targetThread = threads[0]
     const targetTid = targetThread.tid
     const targetFid = targetThread.fid || 4860
-    log(`  帖子: tid=${targetTid} fid=${targetFid} "${(targetThread.title || '').slice(0, 30)}"`)
+    log(`  → 取第 1 条帖子：tid=${targetTid} fid=${targetFid} "${(targetThread.title || '').slice(0, 40)}"`, 'info')
 
     // 2. 推荐 → 取消 × recTimes（帖子推荐，fid 跟着帖子走）
     let recOk = 0
     for (let i = 0; i < recTimes; i++) {
       try {
-        await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 1 }, from.cookie)
+        const r1 = await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 1 }, from.cookie)
+        log(
+          `    ${from.id} 推荐 ${to.name} 的帖子 (tid=${targetTid}) ${i + 1}/${recTimes} 状态 未→是 → ${actionResult(r1)}`,
+          r1.idempotent ? 'warn' : 'ok'
+        )
         await sleep(interval)
-        await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 0 }, from.cookie)
+        const r2 = await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 0 }, from.cookie)
+        log(
+          `    ${from.id} 取消推荐 ${to.name} 的帖子 (tid=${targetTid}) ${i + 1}/${recTimes} 状态 是→未 → ${actionResult(r2)}`,
+          r2.idempotent ? 'warn' : 'ok'
+        )
         recOk++
-        log(`    ✓ 推荐 ${i + 1}/${recTimes}`)
       } catch (e) {
-        log(`    ✗ 推荐 ${i + 1}/${recTimes} 失败: ${e.message}`)
+        log(`    ✗ ${from.id} 推荐/取消 ${i + 1}/${recTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
       }
       await sleep(1500)
     }
 
     // 3. 抓这条主题帖下的评论（取第 1 条）
     let replyItems = []
+    let allReplies = []
     try {
       const r = await executeScraper('replies', { tid: targetTid, cookie: from.cookie })
-      replyItems = (r.items || []).slice(0, 1)
-      log(`  帖子下抓到 ${(r.items || []).length} 条评论`)
+      allReplies = r.items || []
+      replyItems = allReplies.slice(0, 1)
+      log(
+        `  → ${from.id} 抓取了 ${to.name} 帖子下的 ${allReplies.length} 条评论，取第 1 条`,
+        'info'
+      )
     } catch (e) {
-      log(`  ✗ 抓评论失败: ${e.message}`)
+      log(`  ✗ 抓评论失败: ${e.message}`, 'err')
     }
 
     // 4. 点亮 → 取消点亮 × lightTimes（评论，pid 走 reply 的 id，puid 走 reply 作者 uid）
@@ -195,30 +231,39 @@ async function crossAccountInteractTask(ctx) {
       const reply = replyItems[0]
       const targetPid = reply.pid
       const targetPuid = reply.puid
-      log(`  评论: pid=${targetPid} puid=${targetPuid} "${(reply.content || '').slice(0, 30)}"`)
+      log(
+        `  → 评论：pid=${targetPid} 作者=${reply.username || '匿名'} (uid=${reply.puid}) "${(reply.content || '').slice(0, 40)}"`,
+        'info'
+      )
       for (let i = 0; i < lightTimes; i++) {
         try {
-          await executeAction(
+          const lr = await executeAction(
             'light',
             { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
             from.cookie
           )
-          log(`    ✓ 点亮 ${i + 1}/${lightTimes}`)
+          log(
+            `    ${from.id} 点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(lr)}`,
+            lr.idempotent ? 'warn' : 'ok'
+          )
           await sleep(interval)
-          await executeAction(
+          const ur = await executeAction(
             'unlight',
             { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
             from.cookie
           )
-          log(`    ✓ 取消 ${i + 1}/${lightTimes}`)
+          log(
+            `    ${from.id} 取消点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(ur)}`,
+            ur.idempotent ? 'warn' : 'ok'
+          )
           lightOk++
         } catch (e) {
-          log(`    ✗ 点亮/取消 ${i + 1}/${lightTimes} 失败: ${e.message}`)
+          log(`    ✗ ${from.id} 点亮/取消 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
         }
         await sleep(interval)
       }
     } else {
-      log(`  ⚠ 帖子下没评论，跳过点亮`)
+      log(`  ⚠ 帖子下没评论，跳过点亮`, 'warn')
     }
 
     results.push({
@@ -229,7 +274,7 @@ async function crossAccountInteractTask(ctx) {
     })
   }
 
-  log('互相操作完成')
+  log('互相操作完成', 'info')
   return { perPair: results }
 }
 
@@ -406,9 +451,15 @@ export async function runTask(taskId, opts = {}) {
   taskStates.set(taskId, state)
 
   const logs = []
-  const log = (msg) => {
+  const logEntries = [] // { line, level, msg }，前端可按 level 上色
+  /**
+   * log(msg, level?)
+   * level: 'info' | 'ok' | 'warn' | 'err'（默认 info）
+   */
+  const log = (msg, level = 'info') => {
     const line = `[${new Date().toLocaleTimeString('zh-CN')}] ${msg}`
     logs.push(line)
+    logEntries.push({ line, level, msg })
     console.log(`[${task.id}]`, msg)
   }
 
@@ -425,12 +476,12 @@ export async function runTask(taskId, opts = {}) {
     result = await task.run(ctx)
   } catch (e) {
     error = e.message
-    log(`✗ 任务异常: ${e.message}`)
+    log(`✗ 任务异常: ${e.message}`, 'err')
   }
 
   const finished = taskStates.get(taskId) || {}
   finished.running = false
-  finished.lastResult = { result, error, logs }
+  finished.lastResult = { result, error, logs, logEntries }
   finished.lastRunByDate = {
     date: todayKey(),
     at: new Date().toLocaleTimeString('zh-CN'),
@@ -440,7 +491,7 @@ export async function runTask(taskId, opts = {}) {
   }
   taskStates.set(taskId, finished)
 
-  return { success: !error, result, error, logs, ranToday: hasRunToday(taskId) }
+  return { success: !error, result, error, logs, logEntries, ranToday: hasRunToday(taskId) }
 }
 
 /**
