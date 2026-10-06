@@ -9,6 +9,7 @@
 
 import { executeAction, executeScraper } from './operations.js'
 import { readConfig, readAccounts, readTaskSchedules } from './storage.js'
+import { generateHupuReply } from './ai.js'
 
 /* ===========================================================
    任务定义
@@ -365,6 +366,133 @@ async function crossAccountInteractTask(ctx) {
   return { perPair: results }
 }
 
+/**
+ * 号与号互相回复（AI 生成内容）
+ *
+ * 每个 pair（from → to）：
+ *   1. 抓 to 的主题帖列表 → 取第 1 条 → 用 AI 生成 3 条回复，逐条 createReply
+ *   2. 抓首页 nba.hupu.com → 取 5 条帖子 → 每条用 AI 生成 1 条回复
+ *
+ * 每个号一天回 8 条（3 + 5），A↔B 互换后 A 和 B 都跑了一遍。
+ *
+ * 依赖：config.ai 配置（provider + apiKey）；createReply action（已存在）
+ */
+async function crossAccountReplyTask(ctx) {
+  const { accounts, log } = ctx
+  const config = await readConfig()
+  const pairs = (config.interact && config.interact.pairs) || []
+  if (pairs.length === 0) {
+    log('未配置 interact.pairs，跳过', 'warn')
+    return { skipped: true, reason: 'no pairs configured' }
+  }
+  if (!config.ai || !config.ai.provider || !config.ai.apiKey) {
+    log('未配置 AI provider + apiKey，跳过', 'err')
+    return { skipped: true, reason: 'AI 未配置' }
+  }
+
+  const accountById = (id) => accounts.find((a) => a.id === id)
+  const results = []
+
+  for (const pair of pairs) {
+    const from = accountById(pair.from)
+    const to = accountById(pair.to)
+    if (!from || !to) {
+      log(`✗ 跳过配对 ${pair.from}→${pair.to}（账号未找到）`, 'err')
+      continue
+    }
+    if (!to.euid) {
+      log(`✗ 跳过配对 ${pair.from}→${pair.to}（目标账号缺 euid）`, 'err')
+      continue
+    }
+
+    log(`▶ ${from.name} 给 ${to.name} 回复（${pair.from} → ${pair.to}）`, 'info')
+    let replyOk = 0
+
+    // 部分 1：给 to 的主题帖回复 3 条
+    let targetThread = null
+    try {
+      const t = await executeScraper('userThreads', { euid: to.euid, pageSize: 5, cookie: from.cookie })
+      const items = t.items || []
+      if (items.length === 0) {
+        log(`  ✗ ${to.name} 没有主题帖，跳过第一部分`, 'err')
+      } else {
+        targetThread = items[0]
+        log(`  → 取第 1 条主题帖：tid=${targetThread.tid} "${(targetThread.title || '').slice(0, 30)}"`, 'info')
+        for (let i = 0; i < 3; i++) {
+          try {
+            const content = await generateHupuReply({
+              threadTitle: targetThread.title || '',
+              threadContent: targetThread.content || '',
+              config
+            })
+            log(`    AI 生成 ${i + 1}/3：${content}`, 'info')
+            const r = await executeAction(
+              'createReply',
+              {
+                tid: targetThread.tid,
+                topicId: String(targetThread.tid),
+                content,
+                deviceId: ''
+              },
+              from.cookie
+            )
+            log(`    回复 ${i + 1}/3 → ${actionResult(r)}`, r.idempotent ? 'warn' : 'ok')
+            replyOk++
+          } catch (e) {
+            log(`    ✗ 回复 ${i + 1}/3 失败: ${e.message}`, 'err')
+          }
+          await sleep(3000)
+        }
+      }
+    } catch (e) {
+      log(`  ✗ 抓主题帖失败: ${e.message}`, 'err')
+    }
+
+    // 部分 2：给首页 5 条帖子各回复 1 条
+    try {
+      const listRes = await executeScraper('threads', { url: 'https://nba.hupu.com/' })
+      const homeThreads = (listRes.items || []).slice(0, 5)
+      log(`  → 抓取首页 ${homeThreads.length} 条帖子，每条回复 1 条`, 'info')
+      for (let i = 0; i < homeThreads.length; i++) {
+        const t = homeThreads[i]
+        try {
+          const content = await generateHupuReply({
+            threadTitle: t.title || '',
+            config
+          })
+          log(`    AI 生成 ${i + 1}/${homeThreads.length}（tid=${t.tid}）：${content}`, 'info')
+          const r = await executeAction(
+            'createReply',
+            {
+              tid: t.tid,
+              topicId: String(t.tid),
+              content,
+              deviceId: ''
+            },
+            from.cookie
+          )
+          log(`    回复 ${i + 1}/${homeThreads.length} → ${actionResult(r)}`, r.idempotent ? 'warn' : 'ok')
+          replyOk++
+        } catch (e) {
+          log(`    ✗ 回复 ${i + 1}/${homeThreads.length} 失败: ${e.message}`, 'err')
+        }
+        await sleep(3000)
+      }
+    } catch (e) {
+      log(`  ✗ 抓首页失败: ${e.message}`, 'err')
+    }
+
+    results.push({
+      pair: { from: from.id, to: to.id },
+      thread: targetThread ? { tid: targetThread.tid, title: targetThread.title } : null,
+      replyOk
+    })
+  }
+
+  log('互相回复完成', 'info')
+  return { perPair: results }
+}
+
 /* ===========================================================
    任务表（任务定义；schedule / enabled 由用户在 UI 配置）
    =========================================================== */
@@ -382,6 +510,13 @@ export const TASKS = [
     description: 'A 用 A 的 cookie 去给 B 的内容反复点亮/推荐各 8 次（间隔 2 秒）',
     defaultSchedule: '15:00',
     run: crossAccountInteractTask
+  },
+  {
+    id: 'cross-account-reply',
+    name: '号与号互相回复（AI 生成）',
+    description: 'A 用 AI 给 B 的主题帖回复 3 条 + 给首页 5 条帖子各回复 1 条；A↔B 互换',
+    defaultSchedule: '18:00',
+    run: crossAccountReplyTask
   }
 ]
 

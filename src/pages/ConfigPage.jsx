@@ -9,6 +9,7 @@ import { Download, Trash } from '../components/icons'
 const TABS = [
   { key: 'accounts', label: '账号' },
   { key: 'monitor', label: '监控账号' },
+  { key: 'ai', label: 'AI' },
   { key: 'schedule', label: '调度' }
 ]
 
@@ -425,6 +426,9 @@ function ConfigPage() {
         </div>
       )}
 
+      {/* AI tab */}
+      {tab === 'ai' && <AITab />}
+
       {/* 调度 tab */}
       {tab === 'schedule' && <ScheduleTab />}
 
@@ -787,4 +791,164 @@ function countLogs(entries) {
     if (c[e.level] != null) c[e.level]++
   }
   return c
+}
+
+/* ===========================================================
+   AI 配置 Tab 子组件
+   =========================================================== */
+function AITab() {
+  const [providers, setProviders] = useState([])
+  const [ai, setAi] = useState({ provider: '', apiKey: '', model: '' })
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null) // {success, content, error}
+
+  useEffect(() => {
+    // 拉 providers + 当前 AI 配置
+    Promise.all([axios.get('/api/ai/providers'), axios.get('/api/config')]).then(
+      ([pr, cfg]) => {
+        setProviders(pr.data.providers || [])
+        setAi({
+          provider: cfg.data.ai?.provider || 'deepseek',
+          apiKey: cfg.data.ai?.apiKey || '',
+          model: cfg.data.ai?.model || ''
+        })
+      }
+    )
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      // 用 PATCH 方式合并（只更新 ai 字段）
+      const cfg = (await axios.get('/api/config')).data
+      cfg.ai = { provider: ai.provider, apiKey: ai.apiKey, model: ai.model }
+      await axios.post('/api/config', cfg)
+      toast.success('已保存')
+    } catch (e) {
+      toast.error('保存失败: ' + e.message)
+    }
+    setSaving(false)
+  }
+
+  const test = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      // 先保存当前输入
+      const cfg = (await axios.get('/api/config')).data
+      cfg.ai = { provider: ai.provider, apiKey: ai.apiKey, model: ai.model }
+      await axios.post('/api/config', cfg)
+      // 再测试
+      const r = await axios.post('/api/ai/generate', {
+        threadTitle: '湖人这场打得不错，你怎么看？'
+      })
+      setTestResult({ success: true, content: r.data.content })
+    } catch (e) {
+      setTestResult({ success: false, error: e.response?.data?.error || e.message })
+    }
+    setTesting(false)
+  }
+
+  const currentProvider = providers.find((p) => p.key === ai.provider)
+
+  return (
+    <div>
+      <div className="card">
+        <div className="section-head" style={{ marginBottom: 12 }}>
+          <h2 className="section-title">AI Provider 配置</h2>
+          <span className="section-sub">用于「号与号互相回复」任务，自动生成评论内容</span>
+        </div>
+
+        <div className="field">
+          <label className="field-label">Provider</label>
+          <select
+            className="input"
+            value={ai.provider}
+            onChange={(e) => setAi({ ...ai, provider: e.target.value, model: '' })}
+            style={{ maxWidth: 280 }}
+          >
+            {providers.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <div className="field-hint">
+            当前选 {currentProvider?.name || '?'}，默认模型 {currentProvider?.defaultModel || '?'}
+          </div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">API Key</label>
+          <input
+            className="input"
+            type="password"
+            value={ai.apiKey}
+            onChange={(e) => setAi({ ...ai, apiKey: e.target.value })}
+            placeholder="sk-..."
+            style={{ maxWidth: 400 }}
+          />
+          <div className="field-hint">存到 server/data/config.json，不入库</div>
+        </div>
+
+        <div className="field">
+          <label className="field-label">Model（可选）</label>
+          <input
+            className="input"
+            value={ai.model}
+            onChange={(e) => setAi({ ...ai, model: e.target.value })}
+            placeholder={currentProvider?.defaultModel || '留空用默认'}
+            style={{ maxWidth: 400 }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <Button variant="primary" onClick={save} disabled={saving}>
+            {saving ? '保存中…' : '保存'}
+          </Button>
+          <Button onClick={test} disabled={testing || !ai.apiKey}>
+            {testing ? '生成中…' : '测试生成'}
+          </Button>
+        </div>
+
+        {testResult && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: '12px 14px',
+              borderRadius: 'var(--r-sm)',
+              fontSize: 'var(--fs-13)',
+              background: testResult.success ? 'var(--success-bg)' : 'var(--danger-bg)',
+              color: testResult.success ? 'var(--success)' : 'var(--danger)'
+            }}
+          >
+            {testResult.success ? (
+              <>
+                ✓ 生成成功：
+                <span style={{ marginLeft: 6, fontFamily: 'ui-monospace, monospace' }}>
+                  {testResult.content}
+                </span>
+              </>
+            ) : (
+              <>✗ 失败：{testResult.error}</>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div
+        className="hint"
+        style={{
+          marginTop: 16,
+          fontSize: 'var(--fs-12)',
+          color: 'var(--text-3)',
+          lineHeight: 1.6
+        }}
+      >
+        💡 提示：AI 用于「号与号互相回复」任务，每天给 to 的 1 条主题帖回 3 条 + 给首页 5 条帖子各回 1 条（每个号 8 条）。<br />
+        评论由 AI 自动生成（20 字以内，口语化）。虎扑风控可能拒掉部分 reply（频率限制），任务日志会显示每条的真实结果。
+      </div>
+    </div>
+  )
 }
