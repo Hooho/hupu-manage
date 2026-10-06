@@ -21,8 +21,11 @@ function HomePage() {
 
   useEffect(() => {
     loadConfig()
-    const saved = localStorage.getItem('viewedItems')
-    if (saved) setDone(new Set(JSON.parse(saved)))
+    // 不再从 localStorage 恢复 viewedItems：
+    // 举报语义是「进了审核队列 ≠ 真的删」，reply 还出现在 Hupu 列表里就该让用户能再报。
+    // 历史 viewedItems 是旧逻辑遗物（report 成功后 markDone 进去的），全清掉。
+    localStorage.removeItem('viewedItems')
+    setDone(new Set())
   }, [])
 
   useEffect(() => {
@@ -112,7 +115,8 @@ function HomePage() {
         next.delete(item.pid)
         return next
       })
-      markDone(item.pid)
+      // 不调 markDone：提交成功只代表「进了审核队列」，不代表 reply 真的被删。
+      // reply 还出现在列表里就该让用户能再举报，等审核通过后 Hupu 自己就不返回这条了。
     } catch (error) {
       await axios.post('/api/save-operation', {
         id: item.pid,
