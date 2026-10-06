@@ -431,7 +431,7 @@ async function crossAccountInteractTask(ctx) {
  * 依赖：config.ai 配置（provider + apiKey）；createReply action（已存在）
  */
 async function crossAccountReplyTask(ctx) {
-  const { accounts, log } = ctx
+  const { accounts, log, retryOnly, failedActions } = ctx
   const config = await readConfig()
   const pairs = (config.interact && config.interact.pairs) || []
   if (pairs.length === 0) {
@@ -443,24 +443,48 @@ async function crossAccountReplyTask(ctx) {
     return { skipped: true, reason: 'AI 未配置' }
   }
 
+  // retryOnly 模式：只跑上次失败的 reply
+  if (retryOnly) {
+    if (!failedActions || failedActions.length === 0) {
+      log('没有失败操作，跳过', 'info')
+      return { skipped: true, reason: 'no failed actions' }
+    }
+    log(`▶ 重跑 ${failedActions.length} 条失败操作（不重跑全部）`, 'info')
+  }
+
   const accountById = (id) => accounts.find((a) => a.id === id)
   const results = []
+  const newFailedActions = []
 
-  for (const pair of pairs) {
+  // 构造失败位置集合（用于 retryOnly 模式快速判断）
+  const failedSet = new Set(
+    (failedActions || []).map((a) => `${a.pair}|${a.part}|${a.index}`)
+  )
+
+  // 配对过滤：retryOnly 时只跑有失败项的 pair
+  const pairsToRun = retryOnly
+    ? pairs.filter((p) =>
+        (failedActions || []).some(
+          (a) => a.pair === `${p.from}→${p.to}`
+        )
+      )
+    : pairs
+
+  for (const pair of pairsToRun) {
     const from = accountById(pair.from)
     const to = accountById(pair.to)
     if (!from || !to) {
       log(`✗ 跳过配对 ${pair.from}→${pair.to}（账号未找到）`, 'err')
-      continue
     }
     if (!to.euid) {
       log(`✗ 跳过配对 ${pair.from}→${pair.to}（目标账号缺 euid）`, 'err')
       continue
     }
+    const pairKey = `${pair.from}→${pair.to}`
 
-    log(`▶ ${from.name} 给 ${to.name} 回复（${pair.from} → ${pair.to}）`, 'info')
+    log(`▶ ${from.name} 给 ${to.name} 回复（${pairKey}）`, 'info')
     let replyOk = 0
-    const REPLY_INTERVAL = pair.replyIntervalMs ?? 5000 // 每条回复间隔（默认 5 秒）
+    const REPLY_INTERVAL = pair.replyIntervalMs ?? 5000
 
     // 部分 1：给 to 的主题帖回复 3 条
     let targetThread = null
@@ -471,6 +495,9 @@ async function crossAccountReplyTask(ctx) {
       targetThread = items[0]
       log(`  → 取第 1 条主题帖：tid=${targetThread.tid} "${(targetThread.title || '').slice(0, 30)}"`, 'info')
       for (let i = 0; i < 3; i++) {
+        const slot = `${pairKey}|1|${i + 1}`
+        // retryOnly 模式：跳过没失败的
+        if (retryOnly && !failedSet.has(slot)) continue
         const label = `部分1-${i + 1}/3`
         try {
           const content = await safeGenerateContent(config, label, log)
@@ -490,6 +517,14 @@ async function crossAccountReplyTask(ctx) {
           replyOk++
         } catch (e) {
           log(`    ✗ 回复 ${i + 1}/3 最终失败: ${e.message}`, 'err')
+          newFailedActions.push({
+            pair: pairKey,
+            part: 1,
+            index: i + 1,
+            tid: String(targetThread.tid),
+            topicId: String(targetThread.tid),
+            reason: e.message
+          })
         }
         await sleep(REPLY_INTERVAL)
       }
@@ -502,6 +537,9 @@ async function crossAccountReplyTask(ctx) {
       log(`  → 抓取首页 ${homeThreads.length} 条帖子，每条回复 1 条`, 'info')
       for (let i = 0; i < homeThreads.length; i++) {
         const t = homeThreads[i]
+        const slot = `${pairKey}|2|${i + 1}`
+        // retryOnly 模式：跳过没失败的
+        if (retryOnly && !failedSet.has(slot)) continue
         const label = `部分2-${i + 1}/${homeThreads.length}`
         try {
           const content = await safeGenerateContent(config, label, log)
@@ -521,6 +559,14 @@ async function crossAccountReplyTask(ctx) {
           replyOk++
         } catch (e) {
           log(`    ✗ 回复 ${i + 1}/${homeThreads.length} 最终失败: ${e.message}`, 'err')
+          newFailedActions.push({
+            pair: pairKey,
+            part: 2,
+            index: i + 1,
+            tid: String(t.tid),
+            topicId: String(t.tid),
+            reason: e.message
+          })
         }
         await sleep(REPLY_INTERVAL)
       }
@@ -535,8 +581,13 @@ async function crossAccountReplyTask(ctx) {
     })
   }
 
-  log('互相回复完成', 'info')
-  return { perPair: results }
+  log(
+    retryOnly
+      ? `重跑完成，仍失败 ${newFailedActions.length} 条`
+      : `互相回复完成，本次失败 ${newFailedActions.length} 条`,
+    newFailedActions.length > 0 ? 'warn' : 'info'
+  )
+  return { perPair: results, failedActions: newFailedActions }
 }
 
 /* ===========================================================
@@ -759,14 +810,23 @@ export async function runTask(taskId, opts = {}) {
     return { skipped: true, reason: '任务正在执行' }
   }
 
-  if (!opts.force && hasRunToday(taskId)) {
+  if (opts.retryOnly) {
+    const lastFailed = taskStates.get(taskId)?.lastResult?.failedActions || []
+    if (lastFailed.length === 0) {
+      return {
+        skipped: true,
+        reason: '没有失败的操作可重跑',
+        hint: '如需全部重跑，请勾选「强制重跑」'
+      }
+    }
+  } else if (!opts.force && hasRunToday(taskId)) {
     const last = taskStates.get(taskId).lastRunByDate
     return {
       skipped: true,
       reason: '今日已跑过',
       ranToday: true,
       todayRun: last,
-      hint: '如需重新跑，请加 ?force=1'
+      hint: '如需重新跑，请加 ?force=1 或 ?retryOnly=1'
     }
   }
 
@@ -788,6 +848,11 @@ export async function runTask(taskId, opts = {}) {
     console.log(`[${task.id}]`, msg)
   }
 
+  // retryOnly 模式：从上次 lastResult.failedActions 读失败列表
+  const prevFailedActions = opts.retryOnly
+    ? taskStates.get(taskId)?.lastResult?.failedActions || []
+    : []
+
   let result = null
   let error = null
   try {
@@ -796,7 +861,9 @@ export async function runTask(taskId, opts = {}) {
       cookie: accounts[0]?.cookie || '', // 向后兼容
       accounts,
       log,
-      sleep
+      sleep,
+      retryOnly: !!opts.retryOnly,
+      failedActions: prevFailedActions
     }
     result = await task.run(ctx)
   } catch (e) {
@@ -804,15 +871,28 @@ export async function runTask(taskId, opts = {}) {
     log(`✗ 任务异常: ${e.message}`, 'err')
   }
 
+  // retryOnly 模式下，把重跑后仍失败的留下来；之前成功的清掉
+  let mergedFailedActions = result?.failedActions || []
+  if (opts.retryOnly && mergedFailedActions.length === 0) {
+    log(`✓ 所有失败操作已重跑成功`, 'ok')
+  }
+
   const finished = taskStates.get(taskId) || {}
   finished.running = false
-  finished.lastResult = { result, error, logs, logEntries }
+  finished.lastResult = {
+    result: result ? { ...result, failedActions: mergedFailedActions } : result,
+    error,
+    logs,
+    logEntries,
+    failedActions: mergedFailedActions
+  }
   finished.lastRunByDate = {
     date: todayKey(),
     at: new Date().toLocaleTimeString('zh-CN'),
     success: !error,
-    result,
-    error
+    result: finished.lastResult.result,
+    error,
+    retryOnly: !!opts.retryOnly
   }
   taskStates.set(taskId, finished)
 

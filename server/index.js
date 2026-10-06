@@ -670,7 +670,8 @@ app.get('/api/scheduler/board', async (req, res) => {
 app.post('/api/scheduler/run/:id', async (req, res) => {
   try {
     const force = req.body?.force || req.query.force === '1'
-    const out = await runTask(req.params.id, { force })
+    const retryOnly = req.body?.retryOnly || req.query.retryOnly === '1'
+    const out = await runTask(req.params.id, { force, retryOnly })
     res.json({ success: true, ...out })
   } catch (error) {
     res.status(error.status || 500).json({ success: false, error: error.message })

@@ -592,26 +592,35 @@ function ScheduleTab() {
     }
   }
 
-  const runNow = async (id, force) => {
+  const runNow = async (id, opts = {}) => {
+    const { force: forceOpt, retryOnly } = opts
     setRunning((r) => ({ ...r, [id]: true }))
     setFeedback(null)
     try {
-      const res = await axios.post(`/api/scheduler/run/${id}`, { force })
+      const res = await axios.post(`/api/scheduler/run/${id}`, { force: forceOpt, retryOnly })
       const d = res.data
       if (d.skipped) {
         if (d.reason === '今日已跑过') {
           setFeedback({
             type: 'warn',
-            msg: `「${id}」今天已经跑过了（${d.todayRun?.at}）。如需重跑请勾选"强制重跑"。`
+            msg: `「${id}」今天已经跑过了（${d.todayRun?.at}）。如需重跑失败请点「立即跑」，全部重跑请点「强制重跑」。`
+          })
+        } else if (d.reason === '没有失败的操作可重跑') {
+          setFeedback({
+            type: 'info',
+            msg: `「${id}」上次没有失败操作，无需重跑。`
           })
         } else {
           setFeedback({ type: 'info', msg: `${d.reason}` })
         }
       } else if (d.success) {
         const counts = countLogs(d.logEntries || [])
+        const failedActions = d.result?.failedActions?.length || 0
+        const modeLabel = retryOnly ? '重跑失败完成' : '跑完了'
+        const failedMsg = failedActions > 0 ? `，仍失败 ${failedActions} 条` : ''
         setFeedback({
-          type: 'success',
-          msg: `「${id}」跑完了。真成功 ${counts.ok} 条 · 幂等 ${counts.warn} 条 · 失败 ${counts.err} 条`
+          type: failedActions > 0 ? 'warn' : 'success',
+          msg: `「${id}」${modeLabel}。真成功 ${counts.ok} 条 · 幂等 ${counts.warn} 条 · 失败 ${counts.err} 条${failedMsg}`
         })
       } else {
         setFeedback({ type: 'error', msg: `「${id}」跑失败：${d.error}` })
@@ -749,17 +758,22 @@ function ScheduleTab() {
                 />
 
                 <Button
-                  onClick={() => runNow(t.id, false)}
+                  onClick={() => runNow(t.id, { retryOnly: true })}
                   disabled={t.running || running[t.id]}
                 >
-                  {t.running || running[t.id] ? '跑着...' : '立即跑'}
+                  {t.running || running[t.id]
+                    ? '跑着...'
+                    : (() => {
+                        const n = t.lastResult?.failedActions?.length || 0
+                        return n > 0 ? `重跑失败 (${n})` : '立即跑'
+                      })()}
                 </Button>
                 {t.ranToday && (
                   <Button
                     variant="ghost"
                     onClick={() => {
                       if (window.confirm('确定要重新跑一次？（会再调一次虎扑接口）')) {
-                        runNow(t.id, true)
+                        runNow(t.id, { force: true })
                       }
                     }}
                     disabled={t.running || running[t.id]}
