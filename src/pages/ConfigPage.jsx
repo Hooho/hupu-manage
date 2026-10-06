@@ -657,8 +657,39 @@ function ScheduleTab() {
               }}
             >
               <div style={{ flex: 1, minWidth: 220 }}>
-                <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)' }}>
-                  {t.name}
+                {/* 标题 + 今日状态 badge */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)' }}>
+                    {t.name}
+                  </div>
+                  {t.ranToday && t.todayRun && (
+                    <span
+                      style={{
+                        fontSize: 12,
+                        padding: '2px 8px',
+                        borderRadius: 'var(--r-pill)',
+                        background: t.todayRun.success ? 'var(--success-bg)' : 'var(--danger-bg)',
+                        color: t.todayRun.success ? 'var(--success)' : 'var(--danger)',
+                        fontWeight: 500
+                      }}
+                    >
+                      {t.todayRun.success ? '✓' : '✗'} 今日 {t.todayRun.at} 已完成
+                    </span>
+                  )}
+                  {t.running && (
+                    <span
+                      style={{
+                        fontSize: 12,
+                        padding: '2px 8px',
+                        borderRadius: 'var(--r-pill)',
+                        background: 'var(--accent-bg)',
+                        color: 'var(--accent)',
+                        fontWeight: 500
+                      }}
+                    >
+                      ⏳ 正在执行
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
                   {t.description}
@@ -666,22 +697,6 @@ function ScheduleTab() {
                 <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
                   下次执行: {t.nextRun ? new Date(t.nextRun).toLocaleString('zh-CN') : '—'}
                 </div>
-                {t.ranToday && t.todayRun && (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: t.todayRun.success ? 'var(--success)' : 'var(--danger)',
-                      marginTop: 4
-                    }}
-                  >
-                    今日 {t.todayRun.at} 已跑完 · {t.todayRun.success ? '✓ 成功' : '✗ 失败'}
-                  </div>
-                )}
-                {t.running && (
-                  <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4 }}>
-                    ⏳ 正在执行...
-                  </div>
-                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
