@@ -33,6 +33,71 @@ function actionResult(r) {
 }
 
 /**
+ * safeLight — 确保 light 操作最终真成功（state machine，不是机械 retry）
+ *
+ * 逻辑：
+ *   1. 调 light
+ *   2. 抛错（502 / 网络错误）→ retry，最多重试 maxRetries 次，每次 sleep 退避
+ *   3. 返回 PC090002（已点亮过）→ 说明状态已经是亮，但这次"不算新点亮"
+ *      → 先 sleep，等一会；safeUnlight 重置；再 sleep；重新尝试 light
+ *      （循环里继续 retry，因为状态机还没到「真点亮」）
+ *   4. 返回 code:1（真成功）→ 业务完成
+ *   5. 返回其他幂等（如未知 internalCode）→ 也算成功（视为状态正确）
+ *
+ * @returns {Promise<object>} executeAction 的返回值
+ * @throws 最终重试耗尽时抛错
+ */
+async function safeLight(pid, tid, puid, fid, from, label, log, maxRetries = 3) {
+  const params = { pid, tid, puid, fid, deviceId: '' }
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await executeAction('light', params, from.cookie)
+      // PC090002 = 已点亮过，状态机不是「新点亮」。先 unlight 重置再试
+      if (r.data?.internalCode === 'PC090002') {
+        log(`    [${label}] light 命中 PC090002（已点亮过），先 unlight 重置再试`, 'warn')
+        await sleep(2000)
+        await safeUnlight(pid, tid, puid, fid, from, `${label}-reset`, log, maxRetries)
+        await sleep(2000)
+        continue // 重试 light
+      }
+      return r
+    } catch (e) {
+      log(`    [${label}] light 第 ${attempt}/${maxRetries} 次失败: ${e.message}`, 'warn')
+      if (attempt >= maxRetries) throw e
+      await sleep(2000 * attempt) // 退避：2s / 4s
+    }
+  }
+  throw new Error(`${label} light 重试 ${maxRetries} 次仍失败`)
+}
+
+/**
+ * safeUnlight — 确保 unlight 操作最终成功（PC090003 幂等也算 ok）
+ *
+ * 逻辑：
+ *   1. 调 unlight
+ *   2. 抛错 → retry，最多重试 maxRetries 次
+ *   3. 返回 PC090003（未点亮过）→ 状态已经是灭，无需操作，直接 ok
+ *   4. 返回 code:1 → 真成功
+ *
+ * @returns {Promise<object>} executeAction 的返回值
+ * @throws 最终重试耗尽时抛错
+ */
+async function safeUnlight(pid, tid, puid, fid, from, label, log, maxRetries = 3) {
+  const params = { pid, tid, puid, fid, deviceId: '' }
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await executeAction('unlight', params, from.cookie)
+      return r // PC090003 / code:1 都算 ok
+    } catch (e) {
+      log(`    [${label}] unlight 第 ${attempt}/${maxRetries} 次失败: ${e.message}`, 'warn')
+      if (attempt >= maxRetries) throw e
+      await sleep(2000 * attempt)
+    }
+  }
+  throw new Error(`${label} unlight 重试 ${maxRetries} 次仍失败`)
+}
+
+/**
  * 单个号的"推荐 + 点赞"流程（nba.hupu.com 抓取版）
  * accounts 参数：[{id, cookie, euid}]，跑每个号
  */
@@ -248,59 +313,40 @@ async function crossAccountInteractTask(ctx) {
         'info'
       )
       for (let i = 0; i < lightTimes; i++) {
-        // 拆成两个 try 块：light 失败和 unlight 失败分开记，便于排查是哪一步出错
-        let lightSucceeded = false
-        let unlightDone = false
-        let errored = false
+        const cycleLabel = `${i + 1}/${lightTimes}`
+        let cycleOk = false
         try {
-          const lr = await executeAction(
-            'light',
-            { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
-            from.cookie
-          )
+          // 第 1 步：确保 light 真成功（命中 PC090002 自动 unlight 重试，失败 retry 3 次）
+          const lr = await safeLight(targetPid, targetTid, targetPuid, targetFid, from, cycleLabel, log)
           log(
-            `    ${from.name} 点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(lr)}`,
+            `    ${from.name} 点亮 ${to.name} 的回复 ${cycleLabel} → ${actionResult(lr)}`,
             lr.idempotent ? 'warn' : 'ok'
           )
-          lightSucceeded = true
-          await sleep(interval)
-        } catch (e) {
-          errored = true
-          log(`    ✗ ${from.name} 点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
-        }
-        try {
-          const ur = await executeAction(
-            'unlight',
-            { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
-            from.cookie
-          )
+
+          // 第 2 步：确保 unlight 真成功（PC090003 幂等算 ok，失败 retry 3 次）
+          const ur = await safeUnlight(targetPid, targetTid, targetPuid, targetFid, from, cycleLabel, log)
           log(
-            `    ${from.name} 取消点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(ur)}`,
+            `    ${from.name} 取消点亮 ${to.name} 的回复 ${cycleLabel} → ${actionResult(ur)}`,
             ur.idempotent ? 'warn' : 'ok'
           )
-          unlightDone = true
+
+          cycleOk = true
         } catch (e) {
-          errored = true
-          log(`    ✗ ${from.name} 取消点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+          log(`    ✗ ${from.name} 点亮/取消循环 ${cycleLabel} 最终失败: ${e.message}`, 'err')
         }
 
-        // lightOk 只在「light 成功 + unlight 成功」时 ++，与之前语义一致
-        if (lightSucceeded && unlightDone) lightOk++
-
-        // 兜底：若本轮中途出错（不论 light 还是 unlight 失败），再 unlight 一次
-        // 保证评论最终是灭状态；重复 unlight 会得到 PC090003 幂等，不算失败
-        if (errored) {
-          try {
-            const fb = await executeAction(
-              'unlight',
-              { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
-              from.cookie
-            )
-            log(`    ⚠ 兜底 unlight（保证灭状态）→ ${actionResult(fb)}`, fb.idempotent ? 'warn' : 'ok')
-          } catch (e2) {
-            log(`    ⚠ 兜底 unlight 也失败: ${e2.message} [${e2.internalCode || ''}]`, 'err')
-          }
+        // 每个 cycle 结束都兜底 unlight 一次（不论中间成功失败）保证评论归零
+        try {
+          const fb = await safeUnlight(
+            targetPid, targetTid, targetPuid, targetFid, from, `${cycleLabel}-兜底`, log
+          )
+          log(`    ⚠ 兜底 unlight（保证灭状态）→ ${actionResult(fb)}`, fb.idempotent ? 'warn' : 'ok')
+        } catch (e2) {
+          log(`    ⚠ 兜底 unlight 也失败: ${e2.message}`, 'err')
         }
+
+        // lightOk 只在 cycle 完整成功时 ++：light 真成功 + unlight 真成功（幂等不计）
+        if (cycleOk) lightOk++
         await sleep(interval)
       }
     } else {
