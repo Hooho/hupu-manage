@@ -12,7 +12,8 @@ export const FILES = {
   USERS: path.join(DATA_DIR, 'users.json'),
   OPERATIONS: path.join(DATA_DIR, 'operations.json'),
   PROGRESS: path.join(DATA_DIR, 'progress.json'),
-  STATS: path.join(DATA_DIR, 'stats.json')
+  STATS: path.join(DATA_DIR, 'stats.json'),
+  SCHEDULER_LOGS: path.join(DATA_DIR, 'scheduler-logs.json')
 }
 
 await fs.mkdir(DATA_DIR, { recursive: true })
@@ -38,6 +39,8 @@ export const readProgress = () => readJson(FILES.PROGRESS, {})
 export const saveProgress = (p) => writeJson(FILES.PROGRESS, p)
 export const readStats = () => readJson(FILES.STATS, {})
 export const saveStats = (s) => writeJson(FILES.STATS, s)
+export const readSchedulerLogs = () => readJson(FILES.SCHEDULER_LOGS, { tasks: {}, savedAt: null })
+export const saveSchedulerLogs = (d) => writeJson(FILES.SCHEDULER_LOGS, d)
 
 export async function readOperations() {
   return readJson(FILES.OPERATIONS, [])

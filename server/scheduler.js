@@ -8,7 +8,7 @@
 // "今日"判断：任务完成后写入 taskStates[id].lastRunByDate = { date, at, result }
 
 import { executeAction, executeScraper } from './operations.js'
-import { readConfig, readAccounts, readTaskSchedules } from './storage.js'
+import { readConfig, readAccounts, readTaskSchedules, readSchedulerLogs, saveSchedulerLogs } from './storage.js'
 import { generateHupuReply } from './ai.js'
 
 /* ===========================================================
@@ -517,6 +517,61 @@ export const TASKS = [
    调度引擎
    =========================================================== */
 const taskStates = new Map() // id -> { running, lastRun, lastResult, nextRun, lastRunByDate }
+const LOG_RETENTION_DAYS = 3 // 任务日志保留天数
+
+/**
+ * 把 taskStates 持久化到 scheduler-logs.json
+ * 同时清理超过 LOG_RETENTION_DAYS 的旧记录（按 savedAt 字段）
+ */
+async function persistTaskStates() {
+  const data = { savedAt: new Date().toISOString(), tasks: {} }
+  for (const [id, s] of taskStates.entries()) {
+    if (s.lastResult || s.lastRunByDate) {
+      data.tasks[id] = {
+        lastResult: s.lastResult,
+        lastRunByDate: s.lastRunByDate
+      }
+    }
+  }
+  await saveSchedulerLogs(data)
+}
+
+/**
+ * 启动时从 scheduler-logs.json 加载历史 lastResult / lastRunByDate
+ * 同时清理超过 LOG_RETENTION_DAYS 的旧记录
+ */
+async function loadTaskStatesFromDisk() {
+  try {
+    const data = await readSchedulerLogs()
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 3600 * 1000
+    let cleaned = false
+
+    for (const [id, s] of Object.entries(data.tasks || {})) {
+      const savedAt = new Date(s.lastRunByDate?.at ? new Date().setHours(0,0,0,0) : 0).getTime()
+      // 用 lastRunByDate.date 判断（YYYY-MM-DD），更直观
+      const taskDate = s.lastRunByDate?.date
+      const taskDateTs = taskDate ? new Date(taskDate + 'T00:00:00').getTime() : 0
+      if (taskDateTs < cutoff) {
+        delete data.tasks[id]
+        cleaned = true
+        continue
+      }
+      // 加载到内存
+      const existing = taskStates.get(id) || {}
+      taskStates.set(id, {
+        ...existing,
+        lastResult: s.lastResult,
+        lastRunByDate: s.lastRunByDate
+      })
+    }
+
+    if (cleaned) await saveSchedulerLogs(data)
+    const count = Object.keys(data.tasks || {}).length
+    console.log(`[scheduler] 加载历史日志 ${count} 条（保留 ${LOG_RETENTION_DAYS} 天）`)
+  } catch (e) {
+    console.error('[scheduler] 加载历史日志失败:', e.message)
+  }
+}
 
 function todayKey() {
   const d = new Date()
@@ -599,7 +654,9 @@ export async function getBoard() {
 
 const timers = new Map()
 
-export function startScheduler() {
+export async function startScheduler() {
+  // 先加载历史日志（持久化的 lastResult + lastRunByDate），再开始调度
+  await loadTaskStatesFromDisk()
   for (const t of TASKS) {
     scheduleTask(t)
   }
@@ -705,6 +762,9 @@ export async function runTask(taskId, opts = {}) {
     error
   }
   taskStates.set(taskId, finished)
+
+  // 持久化到 scheduler-logs.json（不阻塞返回；写盘失败也不影响任务结果）
+  persistTaskStates().catch((e) => console.error('[scheduler] 持久化失败:', e.message))
 
   return { success: !error, result, error, logs, logEntries, ranToday: hasRunToday(taskId) }
 }

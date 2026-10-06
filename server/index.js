@@ -697,5 +697,5 @@ app.patch('/api/scheduler/task/:id', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)
-  startScheduler()
+  startScheduler().catch((e) => console.error('[scheduler] 启动失败:', e.message))
 })
