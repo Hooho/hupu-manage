@@ -99,6 +99,59 @@ async function safeUnlight(pid, tid, puid, fid, from, label, log, maxRetries = 3
 }
 
 /**
+ * safeGenerateContent — 确保 AI 生成的内容有效（非空、>= 3 字）
+ * 防御：AI 偶尔返回 "" 或只有换行/引号，会被虎扑判为「请输入回帖内容」
+ */
+async function safeGenerateContent(config, label, log, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const text = await generateHupuReply({ config })
+    const trimmed = (text || '').trim()
+    if (trimmed.length >= 3) return trimmed
+    log(`    [${label}] AI 生成内容无效（空或太短：「${text}」），第 ${attempt}/${maxRetries} 次重试`, 'warn')
+    if (attempt >= maxRetries) throw new Error(`${label} AI 生成内容始终无效`)
+    await sleep(2000)
+  }
+  throw new Error('unreachable')
+}
+
+/**
+ * safeCreateReply — 确保 createReply 必须真成功才走下一步（state machine）
+ * 类似 safeLight 思路：retry 3 次，必须 code:1
+ */
+async function safeCreateReply(params, from, label, log, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await executeAction('createReply', params, from.cookie)
+      return r
+    } catch (e) {
+      log(`    [${label}] 回复 第 ${attempt}/${maxRetries} 次失败: ${e.message} [${e.internalCode || ''}]`, 'warn')
+      if (attempt >= maxRetries) throw e
+      await sleep(3000 * attempt) // 退避：3s / 6s
+    }
+  }
+  throw new Error(`${label} 回复重试 ${maxRetries} 次仍失败`)
+}
+
+/**
+ * safeScrapeUserThreads — 抓主题帖，返回空时 retry 几次（应对偶发 502 或风控）
+ */
+async function safeScrapeUserThreads(euid, from, label, log, maxRetries = 2) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await executeScraper('userThreads', { euid, pageSize: 5, cookie: from.cookie })
+      const items = r.items || []
+      if (items.length > 0) return items
+      log(`    [${label}] userThreads 返回空，第 ${attempt}/${maxRetries} 次重试`, 'warn')
+    } catch (e) {
+      log(`    [${label}] userThreads 第 ${attempt}/${maxRetries} 次失败: ${e.message}`, 'warn')
+    }
+    if (attempt >= maxRetries) return []
+    await sleep(3000)
+  }
+  return []
+}
+
+/**
  * 单个号的"推荐 + 点赞"流程（nba.hupu.com 抓取版）
  * accounts 参数：[{id, cookie, euid}]，跑每个号
  */
@@ -407,41 +460,39 @@ async function crossAccountReplyTask(ctx) {
 
     log(`▶ ${from.name} 给 ${to.name} 回复（${pair.from} → ${pair.to}）`, 'info')
     let replyOk = 0
+    const REPLY_INTERVAL = pair.replyIntervalMs ?? 5000 // 每条回复间隔（默认 5 秒）
 
     // 部分 1：给 to 的主题帖回复 3 条
     let targetThread = null
-    try {
-      const t = await executeScraper('userThreads', { euid: to.euid, pageSize: 5, cookie: from.cookie })
-      const items = t.items || []
-      if (items.length === 0) {
-        log(`  ✗ ${to.name} 没有主题帖，跳过第一部分`, 'err')
-      } else {
-        targetThread = items[0]
-        log(`  → 取第 1 条主题帖：tid=${targetThread.tid} "${(targetThread.title || '').slice(0, 30)}"`, 'info')
-        for (let i = 0; i < 3; i++) {
-          try {
-            const content = await generateHupuReply({ config })
-            log(`    AI 生成 ${i + 1}/3：${content}`, 'info')
-            const r = await executeAction(
-              'createReply',
-              {
-                tid: targetThread.tid,
-                topicId: String(targetThread.tid),
-                content,
-                deviceId: ''
-              },
-              from.cookie
-            )
-            log(`    回复 ${i + 1}/3 → ${actionResult(r)}`, r.idempotent ? 'warn' : 'ok')
-            replyOk++
-          } catch (e) {
-            log(`    ✗ 回复 ${i + 1}/3 失败: ${e.message}`, 'err')
-          }
-          await sleep(3000)
+    const items = await safeScrapeUserThreads(to.euid, from, '部分1抓主题帖', log)
+    if (items.length === 0) {
+      log(`  ✗ ${to.name} 抓不到主题帖，跳过第一部分`, 'err')
+    } else {
+      targetThread = items[0]
+      log(`  → 取第 1 条主题帖：tid=${targetThread.tid} "${(targetThread.title || '').slice(0, 30)}"`, 'info')
+      for (let i = 0; i < 3; i++) {
+        const label = `部分1-${i + 1}/3`
+        try {
+          const content = await safeGenerateContent(config, label, log)
+          log(`    AI 生成 ${i + 1}/3：${content}`, 'info')
+          const r = await safeCreateReply(
+            {
+              tid: targetThread.tid,
+              topicId: String(targetThread.tid),
+              content,
+              deviceId: ''
+            },
+            from,
+            label,
+            log
+          )
+          log(`    回复 ${i + 1}/3 → ${actionResult(r)}`, r.idempotent ? 'warn' : 'ok')
+          replyOk++
+        } catch (e) {
+          log(`    ✗ 回复 ${i + 1}/3 最终失败: ${e.message}`, 'err')
         }
+        await sleep(REPLY_INTERVAL)
       }
-    } catch (e) {
-      log(`  ✗ 抓主题帖失败: ${e.message}`, 'err')
     }
 
     // 部分 2：给首页 5 条帖子各回复 1 条
@@ -451,25 +502,27 @@ async function crossAccountReplyTask(ctx) {
       log(`  → 抓取首页 ${homeThreads.length} 条帖子，每条回复 1 条`, 'info')
       for (let i = 0; i < homeThreads.length; i++) {
         const t = homeThreads[i]
+        const label = `部分2-${i + 1}/${homeThreads.length}`
         try {
-          const content = await generateHupuReply({ config })
+          const content = await safeGenerateContent(config, label, log)
           log(`    AI 生成 ${i + 1}/${homeThreads.length}（tid=${t.tid}）：${content}`, 'info')
-          const r = await executeAction(
-            'createReply',
+          const r = await safeCreateReply(
             {
               tid: t.tid,
               topicId: String(t.tid),
               content,
               deviceId: ''
             },
-            from.cookie
+            from,
+            label,
+            log
           )
           log(`    回复 ${i + 1}/${homeThreads.length} → ${actionResult(r)}`, r.idempotent ? 'warn' : 'ok')
           replyOk++
         } catch (e) {
-          log(`    ✗ 回复 ${i + 1}/${homeThreads.length} 失败: ${e.message}`, 'err')
+          log(`    ✗ 回复 ${i + 1}/${homeThreads.length} 最终失败: ${e.message}`, 'err')
         }
-        await sleep(3000)
+        await sleep(REPLY_INTERVAL)
       }
     } catch (e) {
       log(`  ✗ 抓首页失败: ${e.message}`, 'err')
