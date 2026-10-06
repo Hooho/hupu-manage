@@ -191,16 +191,27 @@ app.get('/api/replies/:euid', async (req, res) => {
       const hasNext = response.data.data.nextPage || false
       const newMaxTime = response.data.data.maxTime || maxTime
 
+      // 给每条 reply 标 submitted：是否已在 operations.json 里有 submitted=true 的记录
+      // 仅作 UI 展示用，不影响接口逻辑（不影响是否能再次举报）
+      const operations = await readOperations()
+      const submittedPids = new Set(
+        operations.filter((op) => op.submitted === true).map((op) => op.id)
+      )
+      const repliesWithStatus = replies.map((r) => ({
+        ...r,
+        submitted: submittedPids.has(r.pid)
+      }))
+
       console.log(`第${page}页返回，新的maxTime: ${newMaxTime}`)
 
       res.json({
         euid,
-        username: userInfo.username || replies[0]?.username || euid,
+        username: userInfo.username || repliesWithStatus[0]?.username || euid,
         userInfo,
         page,
         hasNext,
         maxTime: newMaxTime,
-        replies
+        replies: repliesWithStatus
       })
     } else {
       res.status(400).json({ error: '获取数据失败' })

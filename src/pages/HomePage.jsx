@@ -16,16 +16,13 @@ function HomePage() {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState(new Set())
   const [progress, setProgress] = useState(null)
-  const [done, setDone] = useState(new Set())
   const [failed, setFailed] = useState(new Set())
 
   useEffect(() => {
     loadConfig()
-    // 不再从 localStorage 恢复 viewedItems：
-    // 举报语义是「进了审核队列 ≠ 真的删」，reply 还出现在 Hupu 列表里就该让用户能再报。
-    // 历史 viewedItems 是旧逻辑遗物（report 成功后 markDone 进去的），全清掉。
+    // 清掉历史 viewedItems（旧逻辑遗物：report 成功后 markDone 进去的）
+    // 现在「是否已提交」完全靠 item.submitted（来自 operations.json）展示
     localStorage.removeItem('viewedItems')
-    setDone(new Set())
   }, [])
 
   useEffect(() => {
@@ -68,14 +65,6 @@ function HomePage() {
     }
   }
 
-  const markDone = (pid) => {
-    setDone((prev) => {
-      const next = new Set(prev).add(pid)
-      localStorage.setItem('viewedItems', JSON.stringify([...next]))
-      return next
-    })
-  }
-
   const toggle = (pid) => {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -84,7 +73,7 @@ function HomePage() {
     })
   }
 
-  const pending = userData ? userData.replies.filter((r) => !done.has(r.pid)) : []
+  const pending = userData ? userData.replies : []
   const pendingCount = pending.length
   const allSelected = pending.length > 0 && pending.every((r) => selected.has(r.pid))
   const partialSelected =
@@ -241,26 +230,25 @@ function HomePage() {
 
       {!loading &&
         userData?.replies.map((item) => {
-          const isDone = done.has(item.pid)
           const isFail = failed.has(item.pid)
           return (
-            <div key={item.pid} className={`reply${isDone ? ' done' : ''}`}>
+            <div key={item.pid} className="reply">
               <Checkbox
                 checked={selected.has(item.pid)}
                 onCheckedChange={() => toggle(item.pid)}
-                disabled={isDone || busy}
+                disabled={busy}
               />
               <div className="reply-body">
                 <div className="reply-content">{item.content}</div>
                 <div className="reply-meta">
                   <span>{item.formatTime}</span>
-                  {isDone && (
+                  {item.submitted && (
                     <>
                       <span className="sep">·</span>
-                      <span className="badge success">已举报</span>
+                      <span className="badge">已经提交过</span>
                     </>
                   )}
-                  {isFail && !isDone && (
+                  {isFail && (
                     <>
                       <span className="sep">·</span>
                       <span className="badge danger">上次失败</span>
@@ -269,18 +257,14 @@ function HomePage() {
                 </div>
               </div>
               <div className="reply-actions">
-                {isDone ? (
-                  <span className="muted" style={{ padding: '6px 4px' }}>—</span>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant={isFail ? 'default' : 'danger'}
-                    onClick={() => reportOne(item)}
-                    disabled={busy}
-                  >
-                    {isFail ? '重试' : '举报'}
-                  </Button>
-                )}
+                <Button
+                  size="sm"
+                  variant={isFail ? 'default' : 'danger'}
+                  onClick={() => reportOne(item)}
+                  disabled={busy}
+                >
+                  {isFail ? '重试' : '举报'}
+                </Button>
               </div>
             </div>
           )
