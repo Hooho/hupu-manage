@@ -592,7 +592,7 @@ function ScheduleTab() {
     }
   }
 
-  const runNow = async (id, opts = {}) => {
+  const runNow = async (id, opts = {}, meta = {}) => {
     const { force: forceOpt, retryOnly } = opts
     setRunning((r) => ({ ...r, [id]: true }))
     setFeedback(null)
@@ -601,9 +601,12 @@ function ScheduleTab() {
       const d = res.data
       if (d.skipped) {
         if (d.reason === '今日已跑过') {
+          const retryHint = meta.hasFailures
+            ? '如需重跑失败请点「立即跑」，'
+            : ''
           setFeedback({
             type: 'warn',
-            msg: `「${id}」今天已经跑过了（${d.todayRun?.at}）。如需重跑失败请点「立即跑」，全部重跑请点「强制重跑」。`
+            msg: `「${id}」今天已经跑过了（${d.todayRun?.at}）。${retryHint}全部重跑请点「强制重跑」。`
           })
         } else if (d.reason === '没有失败的操作可重跑') {
           setFeedback({
@@ -759,7 +762,7 @@ function ScheduleTab() {
                 />
 
                 <Button
-                  onClick={() => runNow(t.id, { retryOnly: failedCount > 0 })}
+                  onClick={() => runNow(t.id, { retryOnly: failedCount > 0 }, { hasFailures: failedCount > 0 })}
                   disabled={t.running || running[t.id]}
                 >
                   {t.running || running[t.id]
@@ -773,7 +776,7 @@ function ScheduleTab() {
                     variant="ghost"
                     onClick={() => {
                       if (window.confirm('确定要重新跑一次？（会再调一次虎扑接口）')) {
-                        runNow(t.id, { force: true })
+                        runNow(t.id, { force: true }, { hasFailures: failedCount > 0 })
                       }
                     }}
                     disabled={t.running || running[t.id]}
