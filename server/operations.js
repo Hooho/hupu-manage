@@ -53,10 +53,12 @@ const BASE_HEADERS = {
        - ok:true + idempotent  视为幂等成功（不算失败）
        - ok:false 抛错，scheduler 可 catch
    =========================================================== */
-const DEFAULT_SUCCESS = (data) =>
-  data?.code === 1
-    ? { ok: true }
-    : { ok: false, reason: data?.msg || `code=${data?.code}` }
+const DEFAULT_SUCCESS = (data) => {
+  // pcmapi v1 用 code=1 表示成功；/api/v2/ 用 code=200 表示成功（REST 风格）
+  if (data?.code === 1 || data?.code === 200) return { ok: true }
+  // v2 接口用 message，v1 用 msg，两个都看
+  return { ok: false, reason: data?.msg || data?.message || `code=${data?.code}` }
+}
 
 export const ACTIONS = {
   report: {
@@ -288,6 +290,7 @@ export const SCRAPERS = {
       const items = (list || []).map((r) => ({
         tid: r.tid || r.threadId,
         fid: r.fid,
+        topicId: r.topicId,
         title: r.title || '',
         puid: r.puid,
         forumName: r.forum_name || r.topic_name || '',
@@ -323,6 +326,7 @@ export const SCRAPERS = {
         tid: r.tid,
         pid: r.pid,
         puid: r.puid,
+        topicId: r.topicId, // 举报接口要传，不带会被虎扑当「话题不存在」拒绝
         content: stripHtml(r.content || ''),
         formatTime: r.formatTime || ''
       }))
