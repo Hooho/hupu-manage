@@ -27,8 +27,14 @@ function ConfigPage() {
   const [newCookie, setNewCookie] = useState('')
   const [newName, setNewName] = useState('')
   const [newEuidInput, setNewEuidInput] = useState('')
-  const [editingAccount, setEditingAccount] = useState(null) // { id, name, euid }
-  const startEdit = (a) => setEditingAccount({ id: a.id, name: a.name || '', euid: a.euid || '' })
+  const [editingAccount, setEditingAccount] = useState(null) // { id, name, euid, cookie }
+  const startEdit = (a) =>
+    setEditingAccount({
+      id: a.id,
+      name: a.name || '',
+      euid: a.euid || '',
+      cookie: a.cookie || ''
+    })
 
   useEffect(() => {
     load()
@@ -74,11 +80,13 @@ function ConfigPage() {
 
   const updateCookie = async () => {
     if (!editingAccount) return
+    const patch = { name: editingAccount.name, euid: editingAccount.euid }
+    // cookie 留空时不发，避免误清空
+    if (editingAccount.cookie && editingAccount.cookie.trim()) {
+      patch.cookie = editingAccount.cookie.trim()
+    }
     try {
-      await axios.patch(`/api/accounts/${editingAccount.id}`, {
-        name: editingAccount.name,
-        euid: editingAccount.euid
-      })
+      await axios.patch(`/api/accounts/${editingAccount.id}`, patch)
       toast.success('已保存')
       setEditingAccount(null)
       loadCookies()
@@ -337,7 +345,7 @@ function ConfigPage() {
               </div>
               <div className="account-body">
                 {editingAccount?.id === a.id ? (
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                     <input
                       className="input"
                       value={editingAccount.name}
@@ -345,7 +353,7 @@ function ConfigPage() {
                         setEditingAccount({ ...editingAccount, name: e.target.value })
                       }
                       placeholder="昵称"
-                      style={{ width: 160 }}
+                      style={{ width: 140 }}
                     />
                     <input
                       className="input"
@@ -355,6 +363,20 @@ function ConfigPage() {
                       }
                       placeholder="euid"
                       style={{ width: 160 }}
+                    />
+                    <input
+                      className="input"
+                      type="password"
+                      value={editingAccount.cookie}
+                      onChange={(e) =>
+                        setEditingAccount({ ...editingAccount, cookie: e.target.value })
+                      }
+                      placeholder="新 cookie（留空保持原值）"
+                      style={{
+                        width: 360,
+                        fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                        fontSize: 12
+                      }}
                     />
                     <Button size="sm" variant="primary" onClick={updateCookie}>
                       保存
