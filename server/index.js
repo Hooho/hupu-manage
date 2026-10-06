@@ -8,6 +8,7 @@ import * as cheerio from 'cheerio'
 import { executeAction, executeScraper, ACTIONS, SCRAPERS } from './operations.js'
 import { getTaskStates, getBoard, runTask, setTaskConfig, startScheduler } from './scheduler.js'
 import { readAccounts, addAccount, removeAccount, updateAccount, getAccount, getPrimaryCookie, setPrimaryAccount } from './storage.js'
+import { generateHupuReply, listProviders } from './ai.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -135,6 +136,24 @@ app.post('/api/config', async (req, res) => {
   await saveUsers(filteredUsers)
 
   res.json({ success: true })
+})
+
+// AI providers 列表（前端下拉框用）
+app.get('/api/ai/providers', (req, res) => {
+  res.json({ providers: listProviders() })
+})
+
+// 生成单条 AI 评论（手动测试用）
+app.post('/api/ai/generate', async (req, res) => {
+  try {
+    const config = await readConfig()
+    const { threadTitle, threadContent } = req.body || {}
+    if (!threadTitle) return res.status(400).json({ error: '缺少 threadTitle' })
+    const text = await generateHupuReply({ threadTitle, threadContent, config })
+    res.json({ success: true, content: text })
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message })
+  }
 })
 
 // 获取单个用户的回帖列表
