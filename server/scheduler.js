@@ -156,11 +156,13 @@ async function safeScrapeUserThreads(euid, from, label, log, maxRetries = 2) {
  * accounts 参数：[{id, cookie, euid}]，跑每个号
  */
 async function singleAccountDailyFlow(account, log, opts = {}) {
-  const { cookie, name, euid } = account
+  const { id: accountId, cookie, name, euid } = account
   const TARGET_LIGHTS = opts.lightTarget || 10
   const TARGET_THREADS = opts.threadTarget || 8
   const recInterval = opts.recommendInterval || 2000
   const lightInterval = opts.lightInterval || 1500
+
+  const { retryOnly = false, failedSet = new Set(), newFailedActions = [] } = opts
 
   const accName = name || `账号 ${account.id}`
   log(`▶ ${accName}（euid=${euid || '?'}）`)
@@ -169,7 +171,10 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
   log(`  → 抓取了 NBA 列表 ${threads.length} 条帖子`, 'info')
 
   let recOk = 0
-  for (const t of threads) {
+  for (let i = 0; i < threads.length; i++) {
+    const t = threads[i]
+    const slot = `${accountId}|recommend|${i + 1}`
+    if (retryOnly && !failedSet.has(slot)) continue
     const fid = Number(t.board) || 4860
     log(`  → 处理帖子 tid=${t.tid} fid=${fid} "${(t.title || '').slice(0, 30)}"`, 'info')
     try {
@@ -180,7 +185,15 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
       log(`    取消推荐 状态 是→未 ${actionResult(r2)}`, r2.idempotent ? 'warn' : 'ok')
       recOk++
     } catch (e) {
-      log(`  ✗ 推荐 ${t.tid} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+      log(`    ✗ 推荐 ${t.tid} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+      newFailedActions.push({
+        accountId,
+        type: 'recommend',
+        index: i + 1,
+        tid: String(t.tid),
+        fid,
+        reason: e.message
+      })
     }
     await sleep(1500)
   }
@@ -198,6 +211,8 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
       for (const c of comments) {
         if (lightOk >= TARGET_LIGHTS) break
         if (!c.pid || !c.puid) continue
+        const slot = `${accountId}|light|${c.pid}`
+        if (retryOnly && !failedSet.has(slot)) continue
         try {
           const lr = await executeAction(
             'light',
@@ -211,6 +226,15 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
           lightOk++
         } catch (e) {
           log(`    ✗ 点亮 pid=${c.pid} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+          newFailedActions.push({
+            accountId,
+            type: 'light',
+            pid: String(c.pid),
+            tid: String(t.tid),
+            puid: String(c.puid),
+            fid,
+            reason: e.message
+          })
         }
         await sleep(lightInterval)
       }
@@ -227,18 +251,50 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
  * 对每个 cookie 都跑一遍 singleAccountDailyFlow
  */
 async function dailyPostLightTask(ctx) {
-  const { accounts, log } = ctx
+  const { accounts, log, retryOnly, failedActions } = ctx
+  if (retryOnly) {
+    if (!failedActions || failedActions.length === 0) {
+      log('没有失败操作，跳过', 'info')
+      return { skipped: true, reason: 'no failed actions' }
+    }
+    log(`▶ 重跑 ${failedActions.length} 条失败操作（不重跑全部）`, 'info')
+  }
+
+  const newFailedActions = []
+  // 失败位置 set：`${accountId}|${type}|${index|pid}`
+  const failedSet = new Set(
+    (failedActions || []).map((a) =>
+      a.type === 'recommend'
+        ? `${a.accountId}|recommend|${a.index}`
+        : `${a.accountId}|light|${a.pid}`
+    )
+  )
+
+  // 账号过滤：retryOnly 时只跑有失败项的账号
+  const accountsToRun = retryOnly
+    ? accounts.filter((a) => (failedActions || []).some((f) => f.accountId === a.id))
+    : accounts
+
   const results = {}
-  for (const account of accounts) {
+  for (const account of accountsToRun) {
     try {
-      results[account.id] = await singleAccountDailyFlow(account, log)
+      results[account.id] = await singleAccountDailyFlow(account, log, {
+        retryOnly,
+        failedSet,
+        newFailedActions
+      })
     } catch (e) {
-      log(`✗ 账号 ${account.id} 整体失败: ${e.message}`)
+      log(`✗ 账号 ${account.id} 整体失败: ${e.message}`, 'err')
       results[account.id] = { error: e.message }
     }
   }
-  log('多号完成：' + JSON.stringify(results))
-  return { perAccount: results }
+  log(
+    retryOnly
+      ? `重跑完成，仍失败 ${newFailedActions.length} 条`
+      : `多号完成，本次失败 ${newFailedActions.length} 条`,
+    newFailedActions.length > 0 ? 'warn' : 'info'
+  )
+  return { perAccount: results, failedActions: newFailedActions }
 }
 
 /**
@@ -257,7 +313,7 @@ async function dailyPostLightTask(ctx) {
  *   4. 点亮 → 取消点亮，循环 lightTimes 次（评论点亮）
  */
 async function crossAccountInteractTask(ctx) {
-  const { accounts, log } = ctx
+  const { accounts, log, retryOnly, failedActions } = ctx
   const config = await readConfig()
   const pairs = (config.interact && config.interact.pairs) || []
   if (pairs.length === 0) {
@@ -265,10 +321,31 @@ async function crossAccountInteractTask(ctx) {
     return { skipped: true, reason: 'no pairs configured' }
   }
 
+  if (retryOnly) {
+    if (!failedActions || failedActions.length === 0) {
+      log('没有失败操作，跳过', 'info')
+      return { skipped: true, reason: 'no failed actions' }
+    }
+    log(`▶ 重跑 ${failedActions.length} 条失败操作（不重跑全部）`, 'info')
+  }
+
   const accountById = (id) => accounts.find((a) => a.id === id)
   const results = []
+  const newFailedActions = []
 
-  for (const pair of pairs) {
+  // 失败位置 set：`${pair}|${type}|${index}` → type=recommend|light
+  const failedSet = new Set(
+    (failedActions || []).map((a) => `${a.pair}|${a.type}|${a.index}`)
+  )
+
+  // 配对过滤
+  const pairsToRun = retryOnly
+    ? pairs.filter((p) =>
+        (failedActions || []).some((a) => a.pair === `${p.from}→${p.to}`)
+      )
+    : pairs
+
+  for (const pair of pairsToRun) {
     const from = accountById(pair.from)
     const to = accountById(pair.to)
     if (!from || !to) {
@@ -283,6 +360,7 @@ async function crossAccountInteractTask(ctx) {
     const recTimes = pair.recommendTimes ?? 3
     const lightTimes = pair.lightTimes ?? 3
     const interval = pair.intervalMs ?? 2000
+    const pairKey = `${pair.from}→${pair.to}`
 
     log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}，euid=${to.euid}）`, 'info')
 
@@ -311,6 +389,8 @@ async function crossAccountInteractTask(ctx) {
     // 2. 推荐 → 取消 × recTimes（帖子推荐，fid 跟着帖子走）
     let recOk = 0
     for (let i = 0; i < recTimes; i++) {
+      const slot = `${pairKey}|recommend|${i + 1}`
+      if (retryOnly && !failedSet.has(slot)) continue
       try {
         const r1 = await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 1 }, from.cookie)
         log(
@@ -326,12 +406,19 @@ async function crossAccountInteractTask(ctx) {
         recOk++
       } catch (e) {
         log(`    ✗ ${from.name} 推荐/取消 ${i + 1}/${recTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+        newFailedActions.push({
+          pair: pairKey,
+          type: 'recommend',
+          index: i + 1,
+          tid: String(targetTid),
+          fid: Number(targetFid),
+          reason: e.message
+        })
       }
       await sleep(1500)
     }
 
     // 3. 抓 to 自己发表的回复列表（getReplyList）→ 取第 1 条
-    // 这是点亮的真正目标：to 作为作者的回复，不是 to 帖子下面的别人回复
     let replyItems = []
     let allUserReplies = []
     try {
@@ -346,15 +433,13 @@ async function crossAccountInteractTask(ctx) {
       log(`  ✗ 抓 ${to.name} 的回复列表失败: ${e.message}`, 'err')
     }
 
-    // 4. 点亮 → 取消点亮 × lightTimes（评论，pid 走 reply 的 id，puid 走 reply 作者 uid）
+    // 4. 点亮 → 取消点亮 × lightTimes（评论）
     let lightOk = 0
     if (replyItems.length > 0) {
       const reply = replyItems[0]
       const targetPid = reply.pid
       const targetTid = reply.tid
       const targetPuid = reply.puid
-      // fid 必须是回复所在帖子的 fid（不是 to 主题帖的 fid！）
-      // 用 replies scraper 拿一次帖子详情，从中取 fid
       let targetFid = 4860
       try {
         const r = await executeScraper('replies', { tid: targetTid })
@@ -367,29 +452,27 @@ async function crossAccountInteractTask(ctx) {
         'info'
       )
       for (let i = 0; i < lightTimes; i++) {
+        const slot = `${pairKey}|light|${i + 1}`
+        if (retryOnly && !failedSet.has(slot)) continue
         const cycleLabel = `${i + 1}/${lightTimes}`
         let cycleOk = false
         try {
-          // 第 1 步：确保 light 真成功（命中 PC090002 自动 unlight 重试，失败 retry 3 次）
           const lr = await safeLight(targetPid, targetTid, targetPuid, targetFid, from, cycleLabel, log)
           log(
             `    ${from.name} 点亮 ${to.name} 的回复 ${cycleLabel} → ${actionResult(lr)}`,
             lr.idempotent ? 'warn' : 'ok'
           )
-
-          // 第 2 步：确保 unlight 真成功（PC090003 幂等算 ok，失败 retry 3 次）
           const ur = await safeUnlight(targetPid, targetTid, targetPuid, targetFid, from, cycleLabel, log)
           log(
             `    ${from.name} 取消点亮 ${to.name} 的回复 ${cycleLabel} → ${actionResult(ur)}`,
             ur.idempotent ? 'warn' : 'ok'
           )
-
           cycleOk = true
         } catch (e) {
           log(`    ✗ ${from.name} 点亮/取消循环 ${cycleLabel} 最终失败: ${e.message}`, 'err')
         }
 
-        // 每个 cycle 结束都兜底 unlight 一次（不论中间成功失败）保证评论归零
+        // 兜底 unlight
         try {
           const fb = await safeUnlight(
             targetPid, targetTid, targetPuid, targetFid, from, `${cycleLabel}-兜底`, log
@@ -399,8 +482,21 @@ async function crossAccountInteractTask(ctx) {
           log(`    ⚠ 兜底 unlight 也失败: ${e2.message}`, 'err')
         }
 
-        // lightOk 只在 cycle 完整成功时 ++：light 真成功 + unlight 真成功（幂等不计）
-        if (cycleOk) lightOk++
+        // cycle 失败时记 failedAction（兜底不算）
+        if (!cycleOk) {
+          newFailedActions.push({
+            pair: pairKey,
+            type: 'light',
+            index: i + 1,
+            pid: String(targetPid),
+            tid: String(targetTid),
+            puid: String(targetPuid),
+            fid: Number(targetFid),
+            reason: 'cycle 失败'
+          })
+        } else {
+          lightOk++
+        }
         await sleep(interval)
       }
     } else {
@@ -415,8 +511,13 @@ async function crossAccountInteractTask(ctx) {
     })
   }
 
-  log('互相操作完成', 'info')
-  return { perPair: results }
+  log(
+    retryOnly
+      ? `重跑完成，仍失败 ${newFailedActions.length} 条`
+      : `互相操作完成，本次失败 ${newFailedActions.length} 条`,
+    newFailedActions.length > 0 ? 'warn' : 'info'
+  )
+  return { perPair: results, failedActions: newFailedActions }
 }
 
 /**
