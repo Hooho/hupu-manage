@@ -420,11 +420,7 @@ async function crossAccountReplyTask(ctx) {
         log(`  → 取第 1 条主题帖：tid=${targetThread.tid} "${(targetThread.title || '').slice(0, 30)}"`, 'info')
         for (let i = 0; i < 3; i++) {
           try {
-            const content = await generateHupuReply({
-              threadTitle: targetThread.title || '',
-              threadContent: targetThread.content || '',
-              config
-            })
+            const content = await generateHupuReply({ config })
             log(`    AI 生成 ${i + 1}/3：${content}`, 'info')
             const r = await executeAction(
               'createReply',
@@ -456,10 +452,7 @@ async function crossAccountReplyTask(ctx) {
       for (let i = 0; i < homeThreads.length; i++) {
         const t = homeThreads[i]
         try {
-          const content = await generateHupuReply({
-            threadTitle: t.title || '',
-            config
-          })
+          const content = await generateHupuReply({ config })
           log(`    AI 生成 ${i + 1}/${homeThreads.length}（tid=${t.tid}）：${content}`, 'info')
           const r = await executeAction(
             'createReply',

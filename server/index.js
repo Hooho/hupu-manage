@@ -147,9 +147,7 @@ app.get('/api/ai/providers', (req, res) => {
 app.post('/api/ai/generate', async (req, res) => {
   try {
     const config = await readConfig()
-    const { threadTitle, threadContent } = req.body || {}
-    if (!threadTitle) return res.status(400).json({ error: '缺少 threadTitle' })
-    const text = await generateHupuReply({ threadTitle, threadContent, config })
+    const text = await generateHupuReply({ config })
     res.json({ success: true, content: text })
   } catch (e) {
     res.status(500).json({ success: false, error: e.message })
