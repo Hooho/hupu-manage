@@ -211,19 +211,20 @@ async function crossAccountInteractTask(ctx) {
       await sleep(1500)
     }
 
-    // 3. 抓这条主题帖下的评论（取第 1 条）
+    // 3. 抓 to 自己发表的回复列表（getReplyList）→ 取第 1 条
+    // 这是点亮的真正目标：to 作为作者的回复，不是 to 帖子下面的别人回复
     let replyItems = []
-    let allReplies = []
+    let allUserReplies = []
     try {
-      const r = await executeScraper('replies', { tid: targetTid, cookie: from.cookie })
-      allReplies = r.items || []
-      replyItems = allReplies.slice(0, 1)
+      const r = await executeScraper('userContent', { euid: to.euid, pageSize: 5, cookie: from.cookie })
+      allUserReplies = r.items || []
+      replyItems = allUserReplies.slice(0, 1)
       log(
-        `  → ${from.name} 抓取了 ${to.name} 帖子下的 ${allReplies.length} 条评论，取第 1 条`,
+        `  → ${from.name} 抓取了 ${to.name} 自己发表的 ${allUserReplies.length} 条回复，取第 1 条`,
         'info'
       )
     } catch (e) {
-      log(`  ✗ 抓评论失败: ${e.message}`, 'err')
+      log(`  ✗ 抓 ${to.name} 的回复列表失败: ${e.message}`, 'err')
     }
 
     // 4. 点亮 → 取消点亮 × lightTimes（评论，pid 走 reply 的 id，puid 走 reply 作者 uid）
@@ -231,9 +232,19 @@ async function crossAccountInteractTask(ctx) {
     if (replyItems.length > 0) {
       const reply = replyItems[0]
       const targetPid = reply.pid
+      const targetTid = reply.tid
       const targetPuid = reply.puid
+      // fid 必须是回复所在帖子的 fid（不是 to 主题帖的 fid！）
+      // 用 replies scraper 拿一次帖子详情，从中取 fid
+      let targetFid = 4860
+      try {
+        const r = await executeScraper('replies', { tid: targetTid })
+        targetFid = r.fid || 4860
+      } catch (e) {
+        log(`  ⚠ 拿 fid 失败（用默认 4860）: ${e.message}`, 'warn')
+      }
       log(
-        `  → 评论：pid=${targetPid} 作者=${reply.username || '匿名'} (uid=${reply.puid}) "${(reply.content || '').slice(0, 40)}"`,
+        `  → 回复：pid=${targetPid} 来自 ${to.name} (uid=${reply.puid}) 所在帖子 tid=${targetTid} fid=${targetFid} "${(reply.content || '').slice(0, 40)}"`,
         'info'
       )
       for (let i = 0; i < lightTimes; i++) {
@@ -293,7 +304,7 @@ async function crossAccountInteractTask(ctx) {
         await sleep(interval)
       }
     } else {
-      log(`  ⚠ 帖子下没评论，跳过点亮`, 'warn')
+      log(`  ⚠ ${to.name} 没有可点亮的回复（可能是抓回复列表失败或 to 没发过回复），跳过点亮`, 'warn')
     }
 
     results.push({
