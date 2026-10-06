@@ -43,7 +43,8 @@ async function singleAccountDailyFlow(account, log, opts = {}) {
   const recInterval = opts.recommendInterval || 2000
   const lightInterval = opts.lightInterval || 1500
 
-  log(`▶ 账号 ${account.id}（${name || '匿名'} euid=${euid || '?'}）`)
+  const accName = name || `账号 ${account.id}`
+  log(`▶ ${accName}（euid=${euid || '?'}）`)
   const listRes = await executeScraper('threads', { url: 'https://nba.hupu.com/' })
   const threads = (listRes.items || []).slice(0, TARGET_THREADS)
   log(`  → 抓取了 NBA 列表 ${threads.length} 条帖子`, 'info')
@@ -172,11 +173,11 @@ async function crossAccountInteractTask(ctx) {
       const t = await executeScraper('userThreads', { euid: to.euid, pageSize: 5, cookie: from.cookie })
       threads = t.items || []
       if (threads.length === 0) {
-        log(`  ✗ ${to.id} 没有主题帖`, 'err')
+        log(`  ✗ ${to.name} 没有主题帖`, 'err')
         results.push({ pair: { from: from.id, to: to.id }, recommendOk: 0, lightOk: 0, reason: 'no thread' })
         continue
       }
-      log(`  → ${from.id} 用自己的 cookie 抓取了 ${to.name} 的 ${threads.length} 条主题帖`, 'info')
+      log(`  → ${from.name} 用自己的 cookie 抓取了 ${to.name} 的 ${threads.length} 条主题帖`, 'info')
     } catch (e) {
       log(`  ✗ 抓主题帖失败: ${e.message}`, 'err')
       results.push({ pair: { from: from.id, to: to.id }, recommendOk: 0, lightOk: 0, error: e.message })
@@ -194,18 +195,18 @@ async function crossAccountInteractTask(ctx) {
       try {
         const r1 = await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 1 }, from.cookie)
         log(
-          `    ${from.id} 推荐 ${to.name} 的帖子 (tid=${targetTid}) ${i + 1}/${recTimes} 状态 未→是 → ${actionResult(r1)}`,
+          `    ${from.name} 推荐 ${to.name} 的帖子 (tid=${targetTid}) ${i + 1}/${recTimes} 状态 未→是 → ${actionResult(r1)}`,
           r1.idempotent ? 'warn' : 'ok'
         )
         await sleep(interval)
         const r2 = await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 0 }, from.cookie)
         log(
-          `    ${from.id} 取消推荐 ${to.name} 的帖子 (tid=${targetTid}) ${i + 1}/${recTimes} 状态 是→未 → ${actionResult(r2)}`,
+          `    ${from.name} 取消推荐 ${to.name} 的帖子 (tid=${targetTid}) ${i + 1}/${recTimes} 状态 是→未 → ${actionResult(r2)}`,
           r2.idempotent ? 'warn' : 'ok'
         )
         recOk++
       } catch (e) {
-        log(`    ✗ ${from.id} 推荐/取消 ${i + 1}/${recTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+        log(`    ✗ ${from.name} 推荐/取消 ${i + 1}/${recTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
       }
       await sleep(1500)
     }
@@ -218,7 +219,7 @@ async function crossAccountInteractTask(ctx) {
       allReplies = r.items || []
       replyItems = allReplies.slice(0, 1)
       log(
-        `  → ${from.id} 抓取了 ${to.name} 帖子下的 ${allReplies.length} 条评论，取第 1 条`,
+        `  → ${from.name} 抓取了 ${to.name} 帖子下的 ${allReplies.length} 条评论，取第 1 条`,
         'info'
       )
     } catch (e) {
@@ -247,14 +248,14 @@ async function crossAccountInteractTask(ctx) {
             from.cookie
           )
           log(
-            `    ${from.id} 点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(lr)}`,
+            `    ${from.name} 点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(lr)}`,
             lr.idempotent ? 'warn' : 'ok'
           )
           lightSucceeded = true
           await sleep(interval)
         } catch (e) {
           errored = true
-          log(`    ✗ ${from.id} 点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+          log(`    ✗ ${from.name} 点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
         }
         try {
           const ur = await executeAction(
@@ -263,13 +264,13 @@ async function crossAccountInteractTask(ctx) {
             from.cookie
           )
           log(
-            `    ${from.id} 取消点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(ur)}`,
+            `    ${from.name} 取消点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(ur)}`,
             ur.idempotent ? 'warn' : 'ok'
           )
           unlightDone = true
         } catch (e) {
           errored = true
-          log(`    ✗ ${from.id} 取消点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+          log(`    ✗ ${from.name} 取消点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
         }
 
         // lightOk 只在「light 成功 + unlight 成功」时 ++，与之前语义一致
