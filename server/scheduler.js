@@ -98,19 +98,19 @@ async function dailyPostLightTask(ctx) {
 }
 
 /**
- * 号与号之间互相点亮 + 推荐
+ * 号与号之间互相推荐 + 点亮
  * 配置示例（config.interact.pairs）：
  *   [{
  *     from: "A", to: "B",
- *     threadCount: 3,             // 每对抓对方最近 N 条内容（默认 3）
- *     recommendTimes: 8,          // 每条内容推荐+取消次数（默认 8）
- *     lightTimes: 8,              // 每条评论点亮次数（默认 8）
+ *     recommendTimes: 3,          // 给对方主题帖推荐+取消的次数
+ *     lightTimes: 3,              // 给对方帖子下评论点亮+取消的次数
  *     intervalMs: 2000
  *   }]
- * 步骤（每对 from → to，每条内容）：
- *   1. 抓 to 的最近 threadCount 条内容（SCRAPERS.userContent）
- *   2. 每条：推荐 status=1 → 取消 status=0，循环 recommendTimes 次
- *   3. 每条评论（pid）：点亮 lightTimes 次（toggle）
+ * 步骤（每对 from → to）：
+ *   1. 抓 to 的最近 1 条**主题帖**（getThreadList）→ 拿到 (tid, fid)
+ *   2. 推荐 status=1 → 取消 status=0，循环 recommendTimes 次（帖子推荐）
+ *   3. 抓这条主题帖下的评论（replies scraper）→ 取第 1 条评论的 (pid, puid)
+ *   4. 点亮 → 取消点亮，循环 lightTimes 次（评论点亮）
  */
 async function crossAccountInteractTask(ctx) {
   const { accounts, log } = ctx
@@ -138,103 +138,94 @@ async function crossAccountInteractTask(ctx) {
 
     const recTimes = pair.recommendTimes ?? 3
     const lightTimes = pair.lightTimes ?? 3
-    const threadCount = pair.threadCount ?? 1
     const interval = pair.intervalMs ?? 2000
 
-    log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}） · 抓 ${threadCount} 条内容`)
+    log(`▶ 配对 ${from.id} → ${to.id}（${from.name} 给 ${to.name}）`)
 
-    // 1. 抓目标账号的内容（取 threadCount 条）
-    let items = []
+    // 1. 抓目标账号的主题帖列表（用 from 的 cookie 登录态去抓）
+    let threads = []
     try {
-      const content = await executeScraper('userContent', { euid: to.euid, pageSize: Math.max(threadCount, 5) })
-      items = (content.items || []).slice(0, threadCount)
-      if (items.length === 0) {
-        log(`  ✗ ${to.id} 没有可操作的内容`)
-        results.push({ pair, recommendOk: 0, lightOk: 0, reason: 'no content' })
+      const t = await executeScraper('userThreads', { euid: to.euid, pageSize: 5, cookie: from.cookie })
+      threads = t.items || []
+      if (threads.length === 0) {
+        log(`  ✗ ${to.id} 没有主题帖`)
+        results.push({ pair: { from: from.id, to: to.id }, recommendOk: 0, lightOk: 0, reason: 'no thread' })
         continue
       }
-      log(`  抓到 ${items.length} 条内容`)
+      log(`  抓到 ${threads.length} 个主题帖`)
     } catch (e) {
-      log(`  ✗ 抓内容失败: ${e.message}`)
-      results.push({ pair, recommendOk: 0, lightOk: 0, error: e.message })
+      log(`  ✗ 抓主题帖失败: ${e.message}`)
+      results.push({ pair: { from: from.id, to: to.id }, recommendOk: 0, lightOk: 0, error: e.message })
       continue
     }
 
-    let pairRecOk = 0
-    let pairLightOk = 0
-    const perThread = []
+    const targetThread = threads[0]
+    const targetTid = targetThread.tid
+    const targetFid = targetThread.fid || 4860
+    log(`  帖子: tid=${targetTid} fid=${targetFid} "${(targetThread.title || '').slice(0, 30)}"`)
 
-    // 2 + 3. 对每条内容做推荐+取消 + 点亮
-    for (let ti = 0; ti < items.length; ti++) {
-      const target = items[ti]
-      const targetTid = target.tid
-      const targetPid = target.pid
-      const targetPuid = target.puid
-      log(`  [${ti + 1}/${items.length}] tid=${targetTid} pid=${targetPid} "${(target.content || '').slice(0, 30)}"`)
-
-      // 推荐 + 取消 × recTimes
-      let recOk = 0
-      for (let i = 0; i < recTimes; i++) {
-        try {
-          await executeAction('recommend', { tid: targetTid, fid: 4860, status: 1 }, from.cookie)
-          await sleep(interval)
-          await executeAction('recommend', { tid: targetTid, fid: 4860, status: 0 }, from.cookie)
-          recOk++
-          log(`    ✓ 推荐 ${i + 1}/${recTimes}`)
-        } catch (e) {
-          log(`    ✗ 推荐 ${i + 1}/${recTimes} 失败: ${e.message}`)
-        }
-        await sleep(1500)
+    // 2. 推荐 → 取消 × recTimes（帖子推荐，fid 跟着帖子走）
+    let recOk = 0
+    for (let i = 0; i < recTimes; i++) {
+      try {
+        await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 1 }, from.cookie)
+        await sleep(interval)
+        await executeAction('recommend', { tid: targetTid, fid: targetFid, status: 0 }, from.cookie)
+        recOk++
+        log(`    ✓ 推荐 ${i + 1}/${recTimes}`)
+      } catch (e) {
+        log(`    ✗ 推荐 ${i + 1}/${recTimes} 失败: ${e.message}`)
       }
-
-      // 点亮 → 取消点亮（× lightTimes：每次都先 light 再 unlight，最终是"灭"）
-      let lightOk = 0
-      if (targetPid && targetPuid) {
-        for (let i = 0; i < lightTimes; i++) {
-          try {
-            await executeAction(
-              'light',
-              {
-                pid: targetPid,
-                tid: targetTid,
-                puid: targetPuid,
-                fid: 4860,
-                deviceId: ''
-              },
-              from.cookie
-            )
-            log(`    ✓ 点亮 ${i + 1}/${lightTimes}`)
-            await sleep(interval)
-            await executeAction(
-              'unlight',
-              {
-                pid: targetPid,
-                tid: targetTid,
-                puid: targetPuid,
-                fid: 4860,
-                deviceId: ''
-              },
-              from.cookie
-            )
-            log(`    ✓ 取消 ${i + 1}/${lightTimes}`)
-            lightOk++
-          } catch (e) {
-            log(`    ✗ 点亮/取消 ${i + 1}/${lightTimes} 失败: ${e.message}`)
-          }
-          await sleep(interval)
-        }
-      }
-      perThread.push({ tid: targetTid, pid: targetPid, recommendOk: recOk, lightOk })
+      await sleep(1500)
     }
 
-    pairRecOk = perThread.reduce((s, t) => s + t.recommendOk, 0)
-    pairLightOk = perThread.reduce((s, t) => s + t.lightOk, 0)
+    // 3. 抓这条主题帖下的评论（取第 1 条）
+    let replyItems = []
+    try {
+      const r = await executeScraper('replies', { tid: targetTid, cookie: from.cookie })
+      replyItems = (r.items || []).slice(0, 1)
+      log(`  帖子下抓到 ${(r.items || []).length} 条评论`)
+    } catch (e) {
+      log(`  ✗ 抓评论失败: ${e.message}`)
+    }
+
+    // 4. 点亮 → 取消点亮 × lightTimes（评论，pid 走 reply 的 id，puid 走 reply 作者 uid）
+    let lightOk = 0
+    if (replyItems.length > 0) {
+      const reply = replyItems[0]
+      const targetPid = reply.pid
+      const targetPuid = reply.puid
+      log(`  评论: pid=${targetPid} puid=${targetPuid} "${(reply.content || '').slice(0, 30)}"`)
+      for (let i = 0; i < lightTimes; i++) {
+        try {
+          await executeAction(
+            'light',
+            { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
+            from.cookie
+          )
+          log(`    ✓ 点亮 ${i + 1}/${lightTimes}`)
+          await sleep(interval)
+          await executeAction(
+            'unlight',
+            { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
+            from.cookie
+          )
+          log(`    ✓ 取消 ${i + 1}/${lightTimes}`)
+          lightOk++
+        } catch (e) {
+          log(`    ✗ 点亮/取消 ${i + 1}/${lightTimes} 失败: ${e.message}`)
+        }
+        await sleep(interval)
+      }
+    } else {
+      log(`  ⚠ 帖子下没评论，跳过点亮`)
+    }
+
     results.push({
       pair: { from: from.id, to: to.id },
-      threadCount: items.length,
-      recommendOk: pairRecOk,
-      lightOk: pairLightOk,
-      perThread
+      thread: { tid: targetTid, fid: targetFid, title: targetThread.title },
+      recommendOk: recOk,
+      lightOk
     })
   }
 

@@ -193,19 +193,59 @@ export const SCRAPERS = {
   },
 
   /**
-   * 抓取某个号（按 euid）的最近回复/帖子列表
+   * 抓取某个号（按 euid）的最近**主题帖**列表（用户自己发的帖子）
+   * params: { euid: string, page?: number, pageSize?: number }
+   * 用 pcmapi/pc/space/v1/getThreadList
+   * 返回：[{ tid, fid, title, puid, forum_name, createTime }]
+   */
+  userThreads: {
+    label: '抓取某用户的主题帖',
+    async run({ euid, page = 1, pageSize = 5, cookie = '' }) {
+      if (!euid) throw new Error('缺少 euid')
+      const url = `https://my.hupu.com/pcmapi/pc/space/v1/getThreadList?euid=${euid}&page=${page}&pageSize=${pageSize}`
+      const res = await axios.get(url, {
+        headers: {
+          'user-agent': UA,
+          ...(cookie ? { cookie } : {})
+        },
+        timeout: 12000
+      })
+      // 该接口 data 直接是数组（不是嵌套对象）
+      let list = res.data?.data
+      if (!Array.isArray(list)) {
+        // 兼容嵌套结构
+        list = list?.threadList || list?.list || list?.replyList || []
+      }
+      const items = (list || []).map((r) => ({
+        tid: r.tid || r.threadId,
+        fid: r.fid,
+        title: r.title || '',
+        puid: r.puid,
+        forumName: r.forum_name || r.topic_name || '',
+        createTime: r.create_time || null,
+        formatTime: r.formatTime || r.createTimeFormat || ''
+      }))
+      return { euid, source: url, count: items.length, items }
+    }
+  },
+
+  /**
+   * 抓取某个号（按 euid）的最近**回复**列表（用户在别人帖子下的发言）
    * params: { euid: string, pageSize?: number }
    * 用 pcmapi/pc/space/v1/getReplyList（带 maxTime）
    * 返回：[{ tid, pid, puid, content, formatTime }]
    */
   userContent: {
-    label: '抓取某用户的内容',
-    async run({ euid, pageSize = 5 }) {
+    label: '抓取某用户的回复',
+    async run({ euid, pageSize = 5, cookie = '' }) {
       if (!euid) throw new Error('缺少 euid')
       const maxTime = Date.now()
       const url = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${maxTime}&page=1&pageSize=${pageSize}`
       const res = await axios.get(url, {
-        headers: { 'user-agent': UA },
+        headers: {
+          'user-agent': UA,
+          ...(cookie ? { cookie } : {})
+        },
         timeout: 12000
       })
       const data = res.data?.data || {}
