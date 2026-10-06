@@ -105,7 +105,7 @@ function HomePage() {
         content: item.content,
         userid: item.puid,
         username: item.username,
-        status: res.data.status || 'success'
+        submitted: res.data.status === 'success'
       })
       setFailed((prev) => {
         const next = new Set(prev)
@@ -119,7 +119,7 @@ function HomePage() {
         content: item.content,
         userid: item.puid,
         username: item.username,
-        status: 'failed',
+        submitted: false,
         error: error.message
       })
       setFailed((prev) => new Set(prev).add(item.pid))

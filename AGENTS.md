@@ -183,6 +183,7 @@ commit body 写清楚改动点和理由，避免"update files"这种空话。
 - 手机端 `m.hupu.com` 帖子页 404，老的 mobile h5 已下线
 - 虎扑服务端偶发 502 是正常的，加 retry 或忽略
 - cookie 失效后所有接口返回空数据或 AS021999；让用户重新粘贴 cookie
+- **举报需经虎扑审核**：API 返回 success ≠ 真正生效（要等审核通过 reply 才会被删）。所以 reply 还出现在 `/api/replies` 列表里时都应该允许再次举报，不要按 operations.json 里的 submitted 字段去过滤列表。`operations.json` 的 `submitted` 字段语义是「已提交到虎扑审核队列」，不表示「举报生效」
 
 ## 12. 测试方法
 
