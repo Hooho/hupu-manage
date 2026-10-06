@@ -48,7 +48,16 @@ const BASE_HEADERS = {
      referer(params)?    -> 可选 referer
      label               -> 操作显示名（用于日志）
      method              -> POST / GET（默认 POST）
+     isSuccess(data)?    -> {ok, idempotent?, reason?}  业务成功判断（可选）
+       - 默认：data.code === 1 视为成功，其他抛错
+       - ok:true + idempotent  视为幂等成功（不算失败）
+       - ok:false 抛错，scheduler 可 catch
    =========================================================== */
+const DEFAULT_SUCCESS = (data) =>
+  data?.code === 1
+    ? { ok: true }
+    : { ok: false, reason: data?.msg || `code=${data?.code}` }
+
 export const ACTIONS = {
   report: {
     label: '举报',
@@ -60,7 +69,8 @@ export const ACTIONS = {
       pid: String(p.pid),
       content: '低俗谩骂、阴阳怪气、攻击引战、跨区嘲讽'
     }),
-    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`,
+    isSuccess: DEFAULT_SUCCESS
   },
 
   recommend: {
@@ -71,7 +81,15 @@ export const ACTIONS = {
       recommendStatus: p.status, // 1 = 推荐，0 = 取消推荐
       fid: p.fid
     }),
-    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`,
+    isSuccess: (data) => {
+      // 推荐接口：成功 code:1；已推荐过 = 幂等成功；其他抛错
+      if (data?.code === 1) return { ok: true }
+      if (typeof data?.msg === 'string' && /已|已经|重复/.test(data.msg)) {
+        return { ok: true, idempotent: true, reason: data.msg }
+      }
+      return { ok: false, reason: data?.msg || `code=${data?.code}` }
+    }
   },
 
   light: {
@@ -84,7 +102,15 @@ export const ACTIONS = {
       fid: p.fid,
       deviceId: p.deviceId || ''
     }),
-    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`,
+    isSuccess: (data) => {
+      // 点亮：code:1 = 真点亮；internalCode PC090002 = 已点亮过 = 幂等
+      if (data?.code === 1) return { ok: true }
+      if (data?.internalCode === 'PC090002') {
+        return { ok: true, idempotent: true, reason: '已点亮过' }
+      }
+      return { ok: false, reason: data?.msg || `code=${data?.code}` }
+    }
   },
 
   unlight: {
@@ -97,7 +123,15 @@ export const ACTIONS = {
       fid: p.fid,
       deviceId: p.deviceId || ''
     }),
-    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`,
+    isSuccess: (data) => {
+      // 取消点亮：code:1 = 真取消；internalCode PC090003 = 未点亮过 = 幂等
+      if (data?.code === 1) return { ok: true }
+      if (data?.internalCode === 'PC090003') {
+        return { ok: true, idempotent: true, reason: '未点亮过' }
+      }
+      return { ok: false, reason: data?.msg || `code=${data?.code}` }
+    }
   },
 
   createReply: {
@@ -105,30 +139,25 @@ export const ACTIONS = {
     url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/createReply',
     body: (p) => ({
       topicId: String(p.topicId),
-      content: p.content, // 已包含 HTML 标签，如 <p>...</p>
+      content: p.content,
       shumeiId: p.shumeiId || p.deviceId || '',
       deviceid: p.deviceId || p.shumeiId || '',
       tid: p.tid
     }),
-    referer: (p) => `https://bbs.hupu.com/${p.tid}-1.html`
+    referer: (p) => `https://bbs.hupu.com/${p.tid}-1.html`,
+    isSuccess: DEFAULT_SUCCESS
   },
 
   deleteReply: {
-    // URL 已确认（200 不是 404）。body 字段名需要在浏览器 hover 看 Network 确认。
     label: '删除回复',
     url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/reply/delete',
     body: (p) => {
       const pid = String(p.pid)
-      // 保守覆盖多种字段命名，等用户验证后精简
       const base = { tid: p.tid, type: 1, reason: 1 }
-      return {
-        ...base,
-        pid,
-        pids: [pid],
-        replyId: pid
-      }
+      return { ...base, pid, pids: [pid], replyId: pid }
     },
-    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`
+    referer: (p) => `https://bbs.hupu.com/${p.tid}.html`,
+    isSuccess: DEFAULT_SUCCESS
   }
 }
 
@@ -137,7 +166,9 @@ export const ACTIONS = {
  * @param {string} name  - ACTIONS 里的 key
  * @param {object} params - 业务参数
  * @param {string} cookie - 已登录 cookie
- * @returns {Promise<{status: number, data: any}>}
+ * @returns {Promise<{status, data, idempotent?}>}
+ *   业务成功（含幂等）：resolve
+ *   业务失败：reject（带 reason、internalCode、statusCode）
  */
 export async function executeAction(name, params, cookie) {
   const action = ACTIONS[name]
@@ -154,7 +185,28 @@ export async function executeAction(name, params, cookie) {
   if (referer) headers.referer = referer
 
   const response = await axios({ method, url, data, headers })
-  return { status: response.status, data: response.data }
+  const body = response.data || {}
+
+  // 业务成功判断
+  const check = action.isSuccess || ((d) => (d?.code === 1 ? { ok: true } : { ok: false, reason: d?.msg || `code=${d?.code}` }))
+  const result = check(body)
+
+  if (!result.ok) {
+    throw Object.assign(new Error(`${name} 失败: ${result.reason}`), {
+      internalCode: body.internalCode,
+      code: body.code,
+      msg: body.msg,
+      statusCode: response.status,
+      isBusinessFailure: true
+    })
+  }
+
+  return {
+    status: response.status,
+    data: body,
+    idempotent: !!result.idempotent,
+    reason: result.reason
+  }
 }
 
 /* ===========================================================

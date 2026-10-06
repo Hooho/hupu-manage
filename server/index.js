@@ -223,9 +223,15 @@ app.post('/api/action/:name', async (req, res) => {
   try {
     const cookie = await getPrimaryCookie()
     if (!cookie) return res.status(400).json({ error: '未配置主账号 Cookie' })
-    const { data } = await executeAction(name, req.body, cookie)
-    console.log(`${ACTIONS[name].label} 成功:`, data)
-    res.json({ success: true, data, status: 'success' })
+    const { data, idempotent, reason } = await executeAction(name, req.body, cookie)
+    console.log(`${ACTIONS[name].label} ${idempotent ? '幂等' : '成功'}:`, data, idempotent ? `(reason: ${reason})` : '')
+    res.json({
+      success: true,
+      idempotent: !!idempotent,
+      reason: reason || null,
+      data,
+      status: idempotent ? 'idempotent' : 'success'
+    })
   } catch (error) {
     console.error(`${ACTIONS[name].label} 失败:`, error.response?.data || error.message)
     res.status(error.response?.status || 500).json({
