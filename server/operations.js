@@ -148,6 +148,23 @@ export const ACTIONS = {
     isSuccess: DEFAULT_SUCCESS
   },
 
+  createThread: {
+    // 发帖（创建主题帖）
+    // 字段按 createReply 推断：fid(板块) + title + content + 数美双字段
+    // 注意：endpoint 是猜的，跑通前需要先 .find-post-api.mjs 验证；风控要求同 createReply
+    label: '发帖',
+    url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/createThread',
+    body: (p) => ({
+      fid: String(p.fid),
+      title: p.title,
+      content: p.content,
+      shumeiId: p.shumeiId || p.deviceId || '',
+      deviceid: p.deviceId || p.shumeiId || ''
+    }),
+    referer: (p) => `https://bbs.hupu.com/post.xhtml?fid=${p.fid}`,
+    isSuccess: DEFAULT_SUCCESS
+  },
+
   deleteReply: {
     label: '删除回复',
     url: () => 'https://bbs.hupu.com/pcmapi/pc/bbs/v1/reply/delete',
