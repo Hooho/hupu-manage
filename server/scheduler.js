@@ -236,6 +236,10 @@ async function crossAccountInteractTask(ctx) {
         'info'
       )
       for (let i = 0; i < lightTimes; i++) {
+        // 拆成两个 try 块：light 失败和 unlight 失败分开记，便于排查是哪一步出错
+        let lightSucceeded = false
+        let unlightDone = false
+        let errored = false
         try {
           const lr = await executeAction(
             'light',
@@ -246,7 +250,13 @@ async function crossAccountInteractTask(ctx) {
             `    ${from.id} 点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(lr)}`,
             lr.idempotent ? 'warn' : 'ok'
           )
+          lightSucceeded = true
           await sleep(interval)
+        } catch (e) {
+          errored = true
+          log(`    ✗ ${from.id} 点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+        }
+        try {
           const ur = await executeAction(
             'unlight',
             { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
@@ -256,9 +266,28 @@ async function crossAccountInteractTask(ctx) {
             `    ${from.id} 取消点亮 ${to.name} 的评论 (pid=${targetPid}) ${i + 1}/${lightTimes} → ${actionResult(ur)}`,
             ur.idempotent ? 'warn' : 'ok'
           )
-          lightOk++
+          unlightDone = true
         } catch (e) {
-          log(`    ✗ ${from.id} 点亮/取消 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+          errored = true
+          log(`    ✗ ${from.id} 取消点亮 ${i + 1}/${lightTimes} 失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+        }
+
+        // lightOk 只在「light 成功 + unlight 成功」时 ++，与之前语义一致
+        if (lightSucceeded && unlightDone) lightOk++
+
+        // 兜底：若本轮中途出错（不论 light 还是 unlight 失败），再 unlight 一次
+        // 保证评论最终是灭状态；重复 unlight 会得到 PC090003 幂等，不算失败
+        if (errored) {
+          try {
+            const fb = await executeAction(
+              'unlight',
+              { pid: targetPid, tid: targetTid, puid: targetPuid, fid: targetFid, deviceId: '' },
+              from.cookie
+            )
+            log(`    ⚠ 兜底 unlight（保证灭状态）→ ${actionResult(fb)}`, fb.idempotent ? 'warn' : 'ok')
+          } catch (e2) {
+            log(`    ⚠ 兜底 unlight 也失败: ${e2.message} [${e2.internalCode || ''}]`, 'err')
+          }
         }
         await sleep(interval)
       }
