@@ -676,6 +676,7 @@ function ScheduleTab() {
       {board.map((t) => {
         const entries = t.lastResult?.logEntries || []
         const counts = countLogs(entries)
+        const failedCount = t.lastResult?.failedActions?.length || 0
         return (
           <div key={t.id} className="card" style={{ marginBottom: 12 }}>
             <div
@@ -758,15 +759,14 @@ function ScheduleTab() {
                 />
 
                 <Button
-                  onClick={() => runNow(t.id, { retryOnly: true })}
+                  onClick={() => runNow(t.id, { retryOnly: failedCount > 0 })}
                   disabled={t.running || running[t.id]}
                 >
                   {t.running || running[t.id]
                     ? '跑着...'
-                    : (() => {
-                        const n = t.lastResult?.failedActions?.length || 0
-                        return n > 0 ? `重跑失败 (${n})` : '立即跑'
-                      })()}
+                    : failedCount > 0
+                      ? `重跑失败 (${failedCount})`
+                      : '立即跑'}
                 </Button>
                 {t.ranToday && (
                   <Button
