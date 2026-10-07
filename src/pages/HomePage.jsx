@@ -53,9 +53,10 @@ function HomePage() {
       const res = await axios.get(`/api/replies/${euid}?page=${page}`)
       setUserData(res.data)
       setSelected(new Set())
-      if (page !== 1) {
-        await axios.post('/api/save-progress', { euid, page, maxTime: res.data.maxTime })
-      }
+      // 每次都存：maxTime 是下一页的游标（上一页最后一条的 createTime）
+      // 第一页也得存，否则翻到 page 2 时后端拿不到这个 cursor，
+      // 会回退到默认的 Date.now()，下一页可能跟第一页重叠或漏数据
+      await axios.post('/api/save-progress', { euid, page, maxTime: res.data.maxTime })
       return res.data
     } catch (error) {
       toast.error('加载失败: ' + error.message)
