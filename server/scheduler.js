@@ -8,8 +8,18 @@
 // "今日"判断：任务完成后写入 taskStates[id].lastRunByDate = { date, at, result }
 
 import { executeAction, executeScraper } from './operations.js'
-import { readConfig, readAccounts, readTaskSchedules, readSchedulerLogs, saveSchedulerLogs } from './storage.js'
-import { generateHupuReply } from './ai.js'
+import {
+  readConfig,
+  readAccounts,
+  readTaskSchedules,
+  readSchedulerLogs,
+  saveSchedulerLogs,
+  saveOperation,
+  recentClassicTopics,
+  addUsedClassic,
+  hashString
+} from './storage.js'
+import { generateHupuReply, generateHupuThread, generateAgentDigestPost, writePaperPost } from './ai.js'
 
 /* ===========================================================
    任务定义
@@ -112,6 +122,85 @@ async function safeGenerateContent(config, label, log, maxRetries = 3) {
     await sleep(2000)
   }
   throw new Error('unreachable')
+}
+
+/**
+ * safeGenerateThreadContent — 生成 NBA 主题帖（curator + writer，NBA 模式）
+ * 返回 {title, body, kind, ref, keyPoint}；任一字段空都视为无效
+ */
+async function safeGenerateThreadContent(config, newsItems, usedTopics, log, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await generateHupuThread({ config, newsItems, usedTopics })
+      if (r && r.title && r.body && r.title.length >= 4 && r.body.length >= 20) {
+        return r
+      }
+      log(`    AI 输出无效（第 ${attempt}/${maxRetries} 次）：${JSON.stringify(r).slice(0, 100)}`, 'warn')
+    } catch (e) {
+      log(`    AI 生成失败（第 ${attempt}/${maxRetries} 次）：${e.message}`, 'warn')
+    }
+    if (attempt < maxRetries) await sleep(3000 * attempt) // 3s / 6s 退避
+  }
+  throw new Error('AI 生成主题帖始终无效')
+}
+
+/**
+ * safeGenerateAgentDigest — 生成 Agent digest 帖（curatorAgentDigest + writerAgentDigest）
+ * candidates 是 aiPapers scraper 输出
+ * usedTitles 是已用过的标题/主题（用于 curator 避免重复）
+ */
+async function safeGenerateAgentDigest(config, candidates, log, usedTitles = [], maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await generateAgentDigestPost({ config, candidates, usedTitles })
+      if (r && r.title && r.body && r.title.length >= 4 && r.body.length >= 30) {
+        return r
+      }
+      log(`    AI 输出无效（第 ${attempt}/${maxRetries} 次）：${JSON.stringify(r).slice(0, 100)}`, 'warn')
+    } catch (e) {
+      log(`    AI 生成失败（第 ${attempt}/${maxRetries} 次）：${e.message}`, 'warn')
+    }
+    if (attempt < maxRetries) await sleep(3000 * attempt)
+  }
+  throw new Error('AI 生成 Agent digest 始终无效')
+}
+
+/**
+ * safeWritePaperPost — 给定 paper 直接写 5 段式摘要（curator 已由调度层跳过）
+ * 用于"调度层硬选"模式，保证每个 slot 拿到的是不同 paper
+ */
+async function safeWritePaperPost(config, paper, log, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const r = await writePaperPost({ config, paper })
+      if (r && r.title && r.body && r.title.length >= 4 && r.body.length >= 30) {
+        return r
+      }
+      log(`    AI 输出无效（第 ${attempt}/${maxRetries} 次）：${JSON.stringify(r).slice(0, 100)}`, 'warn')
+    } catch (e) {
+      log(`    AI 生成失败（第 ${attempt}/${maxRetries} 次）：${e.message}`, 'warn')
+    }
+    if (attempt < maxRetries) await sleep(3000 * attempt)
+  }
+  throw new Error('AI 生成 paper 摘要始终无效')
+}
+
+/**
+ * 给定候选 + 总 slot 数，按候选顺序取前 N 条做不重复分配
+ * 过滤掉已用过的（用 title lowercase slice 60 做 key）
+ */
+function pickUniquePapers(candidates, usedTitles, totalSlots) {
+  const usedSet = new Set((usedTitles || []).map((t) => t.toLowerCase().trim().slice(0, 60)))
+  const seen = new Set()
+  const fresh = []
+  for (const c of candidates || []) {
+    const key = (c.title || '').toLowerCase().trim().slice(0, 60)
+    if (!key || usedSet.has(key) || seen.has(key)) continue
+    seen.add(key)
+    fresh.push(c)
+    if (fresh.length >= totalSlots) break
+  }
+  return fresh
 }
 
 /**
@@ -691,6 +780,201 @@ async function crossAccountReplyTask(ctx) {
   return { perPair: results, failedActions: newFailedActions }
 }
 
+/**
+ * 每日自动发帖（AI Agent digest 内容，AI 生成）
+ *
+ * 流程：
+ *   1. 抓取 aiPapers（arXiv 4 方向 + HN + OpenAI + DeepMind）→ candidates
+ *   2. 读经典池（已用过的论文/主题） → baseUsedTitles
+ *   3. 遍历每个选中账号 × postsPerAccount：
+ *      - curatorAgentDigest 选 1 → writerAgentDigest 3段式撰写
+ *      - executeAction('createThread', ...) 用该账号 cookie 发
+ *      - 写 operations.json + 更新经典池（按 ref + link hash 去重）
+ *      - 标题加入"本次已用"，下一次 curator 自然换主题
+ *
+ * 配置：config.taskSchedules['daily-post-content']
+ *   - accountIds: ['A', 'B']        # 默认 [primary.id]
+ *   - postsPerAccount: 1            # 每个号每天几条，默认 1（最多 5）
+ *   - fid: 4860                     # 默认 NBA 区；步行街=6
+ */
+async function dailyPostContentTask(ctx) {
+  const { accounts, log } = ctx
+  const config = await readConfig()
+
+  if (!config.ai || !config.ai.provider || !config.ai.apiKey) {
+    log('未配置 AI provider + apiKey，跳过', 'err')
+    return { skipped: true, reason: 'AI 未配置' }
+  }
+
+  // 读任务专属配置
+  const taskCfg =
+    (config.taskSchedules && config.taskSchedules['daily-post-content']) || {}
+
+  const primary = accounts.find((a) => a.primary) || accounts[0]
+  const selectedIds =
+    Array.isArray(taskCfg.accountIds) && taskCfg.accountIds.length > 0
+      ? taskCfg.accountIds
+      : primary
+      ? [primary.id]
+      : []
+  const postsPerAccount = Math.max(1, Math.min(5, Number(taskCfg.postsPerAccount) || 1))
+  const fid = Number(taskCfg.fid) || Number(config.dailyPostContent?.fid) || 4860
+
+  if (selectedIds.length === 0) {
+    log('没有可用账号，跳过', 'err')
+    return { skipped: true, reason: 'no accounts selected' }
+  }
+
+  const totalSlots = selectedIds.length * postsPerAccount
+  log(`▶ 配置：${selectedIds.length} 个账号 × ${postsPerAccount} 帖/账号 = 计划 ${totalSlots} 帖（每帖必须不同），fid=${fid}`, 'info')
+
+  // 1. 抓取候选（多抓一些保证够分）
+  log('▶ 抓 AI Agent 论文/报告', 'info')
+  let candidates = []
+  try {
+    const r = await executeScraper('aiPapers', { days: 7, maxItems: Math.max(40, totalSlots * 4) })
+    candidates = r.items || []
+    log(`  → 抓到 ${candidates.length} 条候选（7 天内）`, 'info')
+  } catch (e) {
+    log(`  ⚠ AI Papers 抓取失败: ${e.message}`, 'warn')
+  }
+
+  // 2. 过滤已用过的（跨天去重）
+  const baseUsedTitles = await recentClassicTopics(50)
+  log(`  → 已收录池 ${baseUsedTitles.length} 条历史`, 'info')
+
+  // 3. 调度层硬选：按候选顺序取前 N 条，100% 不重复
+  const slots = pickUniquePapers(candidates, baseUsedTitles, totalSlots)
+  if (slots.length < totalSlots) {
+    log(
+      `  ✗ 候选不足：需要 ${totalSlots} 条不重复（已过滤已用），仅 ${slots.length} 条可发`,
+      'err'
+    )
+    return {
+      error: 'insufficient unique candidates',
+      need: totalSlots,
+      have: slots.length,
+      accounts: selectedIds,
+      postsPerAccount
+    }
+  }
+  log(`  → 分配 ${slots.length} 个 slot（每篇不重复）`, 'info')
+
+  let totalPosted = 0
+  let totalFailed = 0
+
+  // 4. 遍历：每个账号逐帖写
+  for (let accountIdx = 0; accountIdx < selectedIds.length; accountIdx++) {
+    const accountId = selectedIds[accountIdx]
+    const account = accounts.find((a) => a.id === accountId)
+    if (!account || !account.cookie) {
+      log(`⚠ 账号 ${accountId} 不存在或无 cookie，跳过`, 'warn')
+      continue
+    }
+
+    for (let i = 0; i < postsPerAccount; i++) {
+      const slotIdx = accountIdx * postsPerAccount + i
+      const paper = slots[slotIdx]
+      if (!paper) continue
+
+      const slot = `${account.name} 第 ${i + 1}/${postsPerAccount} 篇`
+      log(`▶ [${slot}] ${(paper.title || '').slice(0, 40)}`, 'info')
+
+      // 5. AI 写（5 段式事实摘要）
+      let content
+      try {
+        content = await safeWritePaperPost(config, paper, log)
+      } catch (e) {
+        log(`  ✗ AI 生成失败: ${e.message}`, 'err')
+        totalFailed++
+        continue
+      }
+      log(`  → 标题：${content.title}`, 'info')
+      if (paper.link) log(`  → 链接：${paper.link}`, 'info')
+
+      // 6. 发帖
+      log(`  → 发帖到 fid=${fid}（${account.id}）`, 'info')
+      let tid = null
+      let actionRes = null
+      try {
+        const r = await executeAction(
+          'createThread',
+          {
+            fid: String(fid),
+            title: content.title,
+            content: content.body,
+            shumeiId: '',
+            deviceid: ''
+          },
+          account.cookie
+        )
+        actionRes = r
+        tid = r.data?.data?.tid || r.data?.tid || r.data?.threadId || null
+        log(`  → 发帖 ${actionResult(r)}（tid=${tid || '?'}）`, 'ok')
+        totalPosted++
+
+        await saveOperation({
+          type: 'createThread',
+          accountId: account.id,
+          accountName: account.name,
+          fid: String(fid),
+          tid: tid ? String(tid) : '',
+          title: content.title,
+          body: content.body,
+          kind: 'paper',
+          ref: paper.title,
+          link: paper.link || null,
+          source: paper.source || null,
+          keyPoint: content.keyPoint,
+          submitted: true,
+          status: 'success',
+          response: actionRes?.data || null
+        })
+
+        // 7. 入已收录池（按 paper title + link 去重）
+        const topicHash = hashString(paper.title + '|' + (paper.link || ''))
+        await addUsedClassic({ topic: paper.title, hash: topicHash })
+      } catch (e) {
+        log(`  ✗ 发帖失败: ${e.message} [${e.internalCode || ''}]`, 'err')
+        totalFailed++
+        await saveOperation({
+          type: 'createThread',
+          accountId: account.id,
+          accountName: account.name,
+          fid: String(fid),
+          title: content.title,
+          body: content.body,
+          kind: 'paper',
+          ref: paper.title,
+          link: paper.link || null,
+          submitted: false,
+          status: 'failed',
+          error: e.message,
+          internalCode: e.internalCode || null
+        })
+      }
+
+      if (slotIdx < totalSlots - 1) await sleep(2000)
+    }
+  }
+
+  log(
+    totalFailed === 0
+      ? `✓ 完成：成功 ${totalPosted} 帖（每帖不同 paper）`
+      : `⚠ 完成：成功 ${totalPosted} 帖，失败 ${totalFailed} 帖`,
+    totalFailed === 0 ? 'ok' : 'warn'
+  )
+
+  return {
+    totalPosted,
+    totalFailed,
+    accounts: selectedIds,
+    postsPerAccount,
+    fid,
+    uniquePapers: slots.length
+  }
+}
+
 /* ===========================================================
    任务表（任务定义；schedule / enabled 由用户在 UI 配置）
    =========================================================== */
@@ -715,6 +999,14 @@ export const TASKS = [
     description: 'A 用 AI 给 B 的主题帖回复 3 条 + 给首页 5 条帖子各回复 1 条；A↔B 互换',
     defaultSchedule: '18:00',
     run: crossAccountReplyTask
+  },
+  {
+    id: 'daily-post-content',
+    name: '每日自动发帖（AI Agent digest）',
+    description:
+      'AI 抓 arXiv + HN + 公司博客的论文/报告 → curator 选 1 篇 → writer 3段式撰写（核心结论/为什么值得看/对 Agent 设计的启发） → 发到指定板块',
+    defaultSchedule: '12:00',
+    run: dailyPostContentTask
   }
 ]
 
@@ -829,10 +1121,12 @@ export function getTaskStates() {
 
 /**
  * 详情版：读持久化 schedule / enabled、距下次多久、今日是否跑过
+ * 顺便把整段 taskSchedules[id] 透出给前端做配置面板（accountIds / postsPerAccount / fid 等）
  */
 export async function getBoard() {
   const today = todayKey()
   const result = []
+  const allSchedules = await readTaskSchedules()
   for (const t of TASKS) {
     const cfg = await getTaskConfig(t.id, t)
     const s = taskStates.get(t.id) || {}
@@ -844,6 +1138,8 @@ export async function getBoard() {
       description: t.description,
       schedule: cfg.schedule,
       enabled: cfg.enabled,
+      // 把整段 taskSchedules[taskId] 透出，前端按需用
+      taskCfg: allSchedules[t.id] || {},
       running: !!s.running,
       lastRun: s.lastRun || null,
       lastResult: s.lastResult || null,

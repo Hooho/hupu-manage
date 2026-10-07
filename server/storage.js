@@ -13,7 +13,8 @@ export const FILES = {
   OPERATIONS: path.join(DATA_DIR, 'operations.json'),
   PROGRESS: path.join(DATA_DIR, 'progress.json'),
   STATS: path.join(DATA_DIR, 'stats.json'),
-  SCHEDULER_LOGS: path.join(DATA_DIR, 'scheduler-logs.json')
+  SCHEDULER_LOGS: path.join(DATA_DIR, 'scheduler-logs.json'),
+  CLASSIC_POOL: path.join(DATA_DIR, 'classic-pool.json')
 }
 
 await fs.mkdir(DATA_DIR, { recursive: true })
@@ -50,6 +51,62 @@ export async function saveOperation(operation) {
   const list = await readOperations()
   list.push({ ...operation, timestamp: Date.now() })
   await writeJson(FILES.OPERATIONS, list)
+}
+
+/* ===========================================================
+   经典池（NBA 知识去重表，防止 AI 重复同一个话题）
+   数据结构：{ items: [{ topic, hash, usedAt }] }
+   默认保留最近 200 条
+   =========================================================== */
+
+const CLASSIC_POOL_MAX = 200
+
+export async function readClassicPool() {
+  return readJson(FILES.CLASSIC_POOL, { items: [] })
+}
+
+export async function saveClassicPool(p) {
+  return writeJson(FILES.CLASSIC_POOL, p)
+}
+
+export async function addUsedClassic({ topic, hash, usedAt }) {
+  if (!topic || !hash) throw new Error('topic/hash 必填')
+  const pool = await readClassicPool()
+  // 同 hash 视为重复，不重复添加
+  if (pool.items.some((it) => it.hash === hash)) return pool
+  pool.items.push({
+    topic,
+    hash,
+    usedAt: usedAt || new Date().toISOString()
+  })
+  // 修剪：保留最近 CLASSIC_POOL_MAX 条
+  if (pool.items.length > CLASSIC_POOL_MAX) {
+    pool.items = pool.items.slice(-CLASSIC_POOL_MAX)
+  }
+  await saveClassicPool(pool)
+  return pool
+}
+
+/**
+ * 给 AI 用：返回最近 N 条主题描述（用作 prompt 去重提示）
+ */
+export async function recentClassicTopics(n = 30) {
+  const pool = await readClassicPool()
+  return (pool.items || [])
+    .slice(-n)
+    .map((it) => it.topic)
+    .filter(Boolean)
+}
+
+/**
+ * 简易字符串 hash（djb2 风格）。用于去重，不要求加密强度。
+ */
+export function hashString(s) {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
+  }
+  return h.toString(36)
 }
 
 /* ===========================================================

@@ -555,6 +555,8 @@ function ScheduleTab() {
   const [running, setRunning] = useState({}) // taskId -> bool
   const [feedback, setFeedback] = useState(null) // {type, msg}
   const [accountNames, setAccountNames] = useState([]) // 用于日志加粗
+  const [accounts, setAccounts] = useState([]) // 用于「每日自动发帖」账号多选
+  const [preview, setPreview] = useState({}) // taskId -> {loading, content}（仅预览类任务）
 
   const load = async () => {
     try {
@@ -568,8 +570,9 @@ function ScheduleTab() {
   const loadAccountNames = async () => {
     try {
       const r = await axios.get('/api/accounts')
-      const names = (r.data.accounts || []).map((a) => a.name).filter(Boolean)
-      setAccountNames(names)
+      const list = r.data.accounts || []
+      setAccounts(list)
+      setAccountNames(list.map((a) => a.name).filter(Boolean))
     } catch {
       // 静默失败：没拿到 names 就当普通文本渲染
     }
@@ -641,6 +644,29 @@ function ScheduleTab() {
       () => toast.success('已复制日志'),
       () => toast.error('复制失败')
     )
+  }
+
+  const previewThread = async (id) => {
+    setPreview((p) => ({ ...p, [id]: { loading: true } }))
+    try {
+      const r = await axios.post('/api/preview/thread')
+      if (r.data.success) {
+        setPreview((p) => ({
+          ...p,
+          [id]: { loading: false, content: r.data, error: null }
+        }))
+      } else {
+        setPreview((p) => ({
+          ...p,
+          [id]: { loading: false, error: r.data.error || '生成失败' }
+        }))
+      }
+    } catch (e) {
+      setPreview((p) => ({
+        ...p,
+        [id]: { loading: false, error: e.response?.data?.error || e.message }
+      }))
+    }
   }
 
   return (
@@ -732,6 +758,16 @@ function ScheduleTab() {
                 <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
                   下次执行: {t.nextRun ? new Date(t.nextRun).toLocaleString('zh-CN') : '—'}
                 </div>
+
+                {/* 任务专属配置（目前 daily-post-content：账号 + 每天几条） */}
+                {t.id === 'daily-post-content' && (
+                  <TaskCfgRow
+                    accounts={accounts}
+                    taskCfg={t.taskCfg || {}}
+                    primaryId={(accounts.find((a) => a.primary) || {}).id}
+                    onSave={(patch) => save(t.id, patch)}
+                  />
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -771,6 +807,15 @@ function ScheduleTab() {
                       ? `重跑失败 (${failedCount})`
                       : '立即跑'}
                 </Button>
+                {t.id === 'daily-post-content' && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => previewThread(t.id)}
+                    disabled={preview[t.id]?.loading}
+                  >
+                    {preview[t.id]?.loading ? '预览生成中…' : '预览生成'}
+                  </Button>
+                )}
                 {t.ranToday && (
                   <Button
                     variant="ghost"
@@ -787,9 +832,80 @@ function ScheduleTab() {
               </div>
             </div>
 
-            {/* 上次执行日志 */}
+            {/* AI 预览结果（仅 daily-post-content） */}
+            {t.id === 'daily-post-content' && preview[t.id] && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '12px 14px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'var(--bg-2)',
+                  fontSize: 'var(--fs-13)'
+                }}
+              >
+                {preview[t.id].error ? (
+                  <div style={{ color: 'var(--danger)' }}>✗ {preview[t.id].error}</div>
+                ) : preview[t.id].content ? (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        marginBottom: 8,
+                        color: 'var(--text-3)',
+                        fontSize: 12
+                      }}
+                    >
+                      <span>预览生成结果（不会真发帖）</span>
+                      <span
+                        className="badge"
+                        style={{
+                          background: preview[t.id].content.kind === 'paper' ? 'var(--accent-bg)' : 'var(--bg)',
+                          color: preview[t.id].content.kind === 'paper' ? 'var(--accent)' : 'var(--text-2)',
+                          borderColor: 'transparent'
+                        }}
+                      >
+                        {preview[t.id].content.kind === 'paper' ? '📄 论文/报告' : '💡 经典主题'}
+                      </span>
+                      <span style={{ color: 'var(--text-3)' }}>
+                        候选 {preview[t.id].content.candidatesCount} · 已收录 {preview[t.id].content.usedTitlesCount}
+                      </span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6, color: 'var(--text)' }}>
+                      {preview[t.id].content.title}
+                    </div>
+                    {preview[t.id].content.link && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--text-3)',
+                          marginBottom: 6,
+                          wordBreak: 'break-all'
+                        }}
+                      >
+                        🔗{' '}
+                        <a
+                          href={preview[t.id].content.link}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: 'var(--accent)' }}
+                        >
+                          {preview[t.id].content.link}
+                        </a>
+                      </div>
+                    )}
+                    <div style={{ whiteSpace: 'pre-wrap', color: 'var(--text-2)', lineHeight: 1.7 }}>
+                      {preview[t.id].content.body}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            )}
+
+            {/* 上次执行日志（默认收起，避免长 task 占太多空间） */}
             {entries.length > 0 && (
-              <details style={{ marginTop: 12 }} open>
+              <details style={{ marginTop: 12 }}>
                 <summary
                   style={{
                     cursor: 'pointer',
@@ -845,6 +961,173 @@ function countLogs(entries) {
     if (c[e.level] != null) c[e.level]++
   }
   return c
+}
+
+/**
+ * 任务专属配置行（目前只用于 daily-post-content）
+ * - 账号多选（默认勾选主账号）
+ * - 每个号每天发几条（1-5）
+ * - 板块 fid（可选，默认 4860 = NBA 区）
+ */
+function TaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
+  // 当前选中账号；未配置则默认勾选主账号（仅在本地 state 用）
+  const [selectedIds, setSelectedIds] = useState(
+    Array.isArray(taskCfg.accountIds) && taskCfg.accountIds.length > 0
+      ? taskCfg.accountIds
+      : primaryId
+      ? [primaryId]
+      : []
+  )
+  const [postsPerAccount, setPostsPerAccount] = useState(
+    Number(taskCfg.postsPerAccount) || 1
+  )
+  const [fid, setFid] = useState(Number(taskCfg.fid) || 4860)
+
+  // 父组件每 5s 轮询会重渲染并传新 taskCfg；把 prop 同步到本地 state，
+  // 避免「我改的值不显示」或「输入后又被服务端旧值覆盖」。
+  useEffect(() => {
+    if (Array.isArray(taskCfg.accountIds)) {
+      setSelectedIds(taskCfg.accountIds)
+    }
+    if (typeof taskCfg.postsPerAccount === 'number') {
+      setPostsPerAccount(taskCfg.postsPerAccount)
+    }
+    if (typeof taskCfg.fid === 'number' && taskCfg.fid > 0) {
+      setFid(taskCfg.fid)
+    }
+  }, [taskCfg])
+
+  const toggleAccount = (id) => {
+    setSelectedIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+      onSave({ accountIds: next })
+      return next
+    })
+  }
+
+  const setPosts = (n) => {
+    const v = Math.max(1, Math.min(5, Math.floor(Number(n) || 1)))
+    setPostsPerAccount(v)
+    onSave({ postsPerAccount: v })
+  }
+
+  const setFidVal = (n) => {
+    // 不再用 || 4860 兜底——空值应该报 invalid，不静默回滚
+    const num = Number(n)
+    if (!Number.isFinite(num) || num <= 0) return
+    const v = Math.floor(num)
+    setFid(v)
+    onSave({ fid: v })
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: '10px 12px',
+        background: 'var(--bg-2)',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-13)'
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap'
+        }}
+      >
+        <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>账号</span>
+        {accounts.length === 0 ? (
+          <span style={{ color: 'var(--text-3)' }}>（先去「账号」tab 添加）</span>
+        ) : (
+          accounts.map((a) => (
+            <label
+              key={a.id}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                cursor: 'pointer',
+                color: selectedIds.includes(a.id) ? 'var(--text)' : 'var(--text-3)'
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(a.id)}
+                onChange={() => toggleAccount(a.id)}
+              />
+              <span
+                style={{
+                  fontWeight: a.id === primaryId ? 600 : 400,
+                  color: a.primary ? 'var(--accent)' : 'var(--text-2)'
+                }}
+              >
+                {a.name || `账号 ${a.id}`}
+                {a.primary && (
+                  <span style={{ fontSize: 11, marginLeft: 4 }}>⭐</span>
+                )}
+              </span>
+            </label>
+          ))
+        )}
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginTop: 10,
+          flexWrap: 'wrap'
+        }}
+      >
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>每个号每天</span>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={5}
+            step={1}
+            value={postsPerAccount}
+            onChange={(e) => setPosts(e.target.value)}
+            style={{ width: 70 }}
+          />
+          <span style={{ color: 'var(--text-2)' }}>帖</span>
+        </label>
+        <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
+          计划共 {selectedIds.length * postsPerAccount} 帖/天
+        </span>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          marginTop: 10
+        }}
+      >
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>板块 fid</span>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            step={1}
+            value={fid}
+            onChange={(e) => setFidVal(e.target.value)}
+            style={{ width: 90 }}
+          />
+          <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
+            4860=NBA · 6=步行街 · 其他自己查
+          </span>
+        </label>
+      </div>
+    </div>
+  )
 }
 
 /* ===========================================================
@@ -1000,8 +1283,10 @@ function AITab() {
           lineHeight: 1.6
         }}
       >
-        💡 提示：AI 用于「号与号互相回复」任务，每天给 to 的 1 条主题帖回 3 条 + 给首页 5 条帖子各回 1 条（每个号 8 条）。<br />
-        评论由 AI 自动生成（20 字以内，口语化）。虎扑风控可能拒掉部分 reply（频率限制），任务日志会显示每条的真实结果。
+        💡 提示：AI 同时驱动 3 个任务：<br />
+        · <strong>「号与号互相回复」</strong>：每个号 8 条评论（20 字以内，口语化）<br />
+        · <strong>「每日自动发帖」</strong>：每个主账号每天发 1 条 AI Agent digest 帖（标题 18-32 字、正文 3 段式）<br />
+        · 「测试生成」按钮只验证 provider，不发帖。虎扑风控可能拒掉部分接口（频率限制），任务日志会显示每条的真实结果。
       </div>
     </div>
   )
