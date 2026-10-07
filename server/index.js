@@ -191,11 +191,14 @@ app.get('/api/replies/:euid', async (req, res) => {
       const hasNext = response.data.data.nextPage || false
       const newMaxTime = response.data.data.maxTime || maxTime
 
-      // 给每条 reply 标 submitted：是否已在 operations.json 里有 submitted=true 的记录
+      // 给每条 reply 标 submitted：是否已提交过（成功上报到虎扑审核队列）
+      // 兼容老数据：op.submitted === true（新格式）|| op.status === 'success'（旧格式）
       // 仅作 UI 展示用，不影响接口逻辑（不影响是否能再次举报）
       const operations = await readOperations()
       const submittedPids = new Set(
-        operations.filter((op) => op.submitted === true).map((op) => op.id)
+        operations
+          .filter((op) => op.submitted === true || op.status === 'success')
+          .map((op) => op.id)
       )
       const repliesWithStatus = replies.map((r) => ({
         ...r,
