@@ -191,19 +191,25 @@ app.get('/api/replies/:euid', async (req, res) => {
       const hasNext = response.data.data.nextPage || false
       const newMaxTime = response.data.data.maxTime || maxTime
 
-      // 给每条 reply 标 submitted：是否已提交过（成功上报到虎扑审核队列）
+      // 给每条 reply 标 submitted / submitCount：是否已提交过 + 提交次数
       // 兼容老数据：op.submitted === true（新格式）|| op.status === 'success'（旧格式）
       // 仅作 UI 展示用，不影响接口逻辑（不影响是否能再次举报）
       const operations = await readOperations()
-      const submittedPids = new Set(
-        operations
-          .filter((op) => op.submitted === true || op.status === 'success')
-          .map((op) => op.id)
-      )
-      const repliesWithStatus = replies.map((r) => ({
-        ...r,
-        submitted: submittedPids.has(r.pid)
-      }))
+      const submitCountMap = new Map() // pid -> 成功提交次数
+      for (const op of operations) {
+        if (op.submitted === true || op.status === 'success') {
+          const id = op.id
+          submitCountMap.set(id, (submitCountMap.get(id) || 0) + 1)
+        }
+      }
+      const repliesWithStatus = replies.map((r) => {
+        const count = submitCountMap.get(r.pid) || 0
+        return {
+          ...r,
+          submitted: count > 0,
+          submitCount: count
+        }
+      })
 
       console.log(`第${page}页返回，新的maxTime: ${newMaxTime}`)
 

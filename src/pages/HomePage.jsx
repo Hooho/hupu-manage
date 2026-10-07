@@ -246,7 +246,9 @@ function HomePage() {
                   {item.submitted && (
                     <>
                       <span className="sep">·</span>
-                      <span className="badge">已经提交过</span>
+                      <span className="badge">
+                        已经提交过{item.submitCount > 1 ? ` ×${item.submitCount}` : ''}
+                      </span>
                     </>
                   )}
                   {isFail && (
