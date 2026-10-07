@@ -184,6 +184,7 @@ commit body 写清楚改动点和理由，避免"update files"这种空话。
 - 虎扑服务端偶发 502 是正常的，加 retry 或忽略
 - cookie 失效后所有接口返回空数据或 AS021999；让用户重新粘贴 cookie
 - **举报需经虎扑审核**：API 返回 success ≠ 真正生效（要等审核通过 reply 才会被删）。所以 reply 还出现在 `/api/replies` 列表里时都应该允许再次举报，不要按 operations.json 里的 submitted 字段去过滤列表。`operations.json` 的 `submitted` 字段语义是「已提交到虎扑审核队列」，不表示「举报生效」
+- **App 端 mobileapi 写操作（hupu-new-sign 头）**：`notifyShareInfo` 等接口的真实签名是请求头 `hupu-new-sign`（不是 body 里的 `sign` 字段，body 的 sign 是装饰可省）。`hupu-new-sign` 是 **session-level 固定值**（同 session 多次请求都同一个），只跟 `x-hupu-token` / `hupu-encrypt-salt` 绑定，**不依赖业务字段**（bizId/shareTitle/shareURL 随便改 sign 都过）。重放只需保留 `hupu-new-sign` 头 + 改 `crt` 到当前时间。session 过期要重新抓包更新 `config.appAuth`。具体见 `server/operations.js` 的 `notifyShare` action。
 - **`maxTime` 是下一页 cursor**：Hupu `getReplyList` 的 `data.maxTime` 等于「当前页里 createTime 最早那条」的 timestamp。`/api/replies` 翻页必须把这个值存到 `progress.json`，**包括 page 1**——之前 `if (page !== 1)` 跳过保存，导致 page 2 用 backend 默认 `Date.now()` 当 cursor，出现重复/漏数据。page 1 用 `Date.now()`，page > 1 用 progress 里上次存的 maxTime。
 
 ## 12. 测试方法
