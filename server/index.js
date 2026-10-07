@@ -154,6 +154,52 @@ app.post('/api/ai/generate', async (req, res) => {
   }
 })
 
+// 预览「每日自动发帖」AI 生成结果（不真发帖）
+// 抓 AI Papers 候选 + 调度层硬选 1 篇 + writer 5 段式事实摘要
+app.post('/api/preview/thread', async (req, res) => {
+  try {
+    const config = await readConfig()
+    if (!config.ai?.provider || !config.ai?.apiKey) {
+      return res.status(400).json({ success: false, error: '未配置 AI provider + apiKey' })
+    }
+    const { executeScraper } = await import('./operations.js')
+    const { recentClassicTopics } = await import('./storage.js')
+    const { writePaperPost } = await import('./ai.js')
+
+    let candidates = []
+    try {
+      const r = await executeScraper('aiPapers', { days: 7, maxItems: 40 })
+      candidates = r.items || []
+    } catch (e) {
+      // 抓失败也能继续
+    }
+    const usedTitles = await recentClassicTopics(50)
+    const usedSet = new Set(usedTitles.map((t) => t.toLowerCase().trim().slice(0, 60)))
+    const seen = new Set()
+    const fresh = []
+    for (const c of candidates) {
+      const key = (c.title || '').toLowerCase().trim().slice(0, 60)
+      if (!key || usedSet.has(key) || seen.has(key)) continue
+      seen.add(key)
+      fresh.push(c)
+    }
+    if (fresh.length === 0) {
+      return res.json({ success: false, error: '没有未发过的新候选' })
+    }
+    const paper = fresh[0]
+    const out = await writePaperPost({ config, paper })
+    res.json({
+      success: true,
+      candidatesCount: candidates.length,
+      freshCount: fresh.length,
+      usedTitlesCount: usedTitles.length,
+      ...out
+    })
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message })
+  }
+})
+
 // 获取单个用户的回帖列表
 app.get('/api/replies/:euid', async (req, res) => {
   try {
@@ -260,7 +306,15 @@ app.post('/api/action/:name', async (req, res) => {
   try {
     const cookie = await getPrimaryCookie()
     if (!cookie) return res.status(400).json({ error: '未配置主账号 Cookie' })
-    const { data, idempotent, reason } = await executeAction(name, req.body, cookie)
+    // App 端 mobileapi 接口需要从 config.appAuth 读 session-level 固定 header
+    // （hupu-new-sign / hupu-encrypt-salt / x-hupu-token / hupu-mobile-cookie）
+    // 抓包一次后填进 config.json，重放可稳定
+    const config = await readConfig()
+    const params = {
+      ...req.body,
+      _appAuth: config.appAuth || {}
+    }
+    const { data, idempotent, reason } = await executeAction(name, params, cookie)
     console.log(`${ACTIONS[name].label} ${idempotent ? '幂等' : '成功'}:`, data, idempotent ? `(reason: ${reason})` : '')
     res.json({
       success: true,
@@ -282,8 +336,11 @@ app.post('/api/action/:name', async (req, res) => {
 // 抓取端点（GET + cheerio 解析）
 // 例：POST /api/scrape/threads body={url?} → 帖子列表
 //     POST /api/scrape/replies body={tid}  → 单帖评论
+//     POST /api/scrape/nba-news body={hours?, maxItems?}  → NBA RSS（URL 用 kebab，对应 SCRAPERS.nbaNews）
 app.post('/api/scrape/:name', async (req, res) => {
-  const name = req.params.name
+  // kebab → camel（URL 友好，内部保持 camelCase）
+  const rawName = req.params.name
+  const name = rawName.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
   if (!SCRAPERS[name]) {
     return res.status(404).json({ error: `未知抓取器: ${name}` })
   }
@@ -700,14 +757,33 @@ app.post('/api/scheduler/run/:id', async (req, res) => {
 
 app.patch('/api/scheduler/task/:id', async (req, res) => {
   try {
-    const { enabled, schedule } = req.body || {}
+    const {
+      enabled,
+      schedule,
+      // 任务专属配置（目前 daily-post-content 用）
+      accountIds,
+      postsPerAccount,
+      fid
+    } = req.body || {}
     const patch = {}
     if (typeof enabled === 'boolean') patch.enabled = enabled
     if (typeof schedule === 'string' && /^\d{2}:\d{2}$/.test(schedule)) {
       patch.schedule = schedule
     }
+    if (Array.isArray(accountIds)) {
+      patch.accountIds = accountIds.filter((x) => typeof x === 'string')
+    }
+    if (typeof postsPerAccount === 'number' && Number.isFinite(postsPerAccount)) {
+      patch.postsPerAccount = Math.max(1, Math.min(5, Math.floor(postsPerAccount)))
+    }
+    if (typeof fid === 'number' && Number.isFinite(fid) && fid > 0) {
+      patch.fid = Math.floor(fid)
+    }
     if (Object.keys(patch).length === 0) {
-      return res.status(400).json({ error: '需要 enabled:boolean 或 schedule:HH:MM' })
+      return res.status(400).json({
+        error:
+          '需要 enabled:boolean / schedule:HH:MM / accountIds:string[] / postsPerAccount:number(1-5) / fid:number 至少一个'
+      })
     }
     const r = await setTaskConfig(req.params.id, patch)
     res.json({ success: true, config: r })

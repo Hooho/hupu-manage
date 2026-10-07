@@ -177,6 +177,62 @@ export const ACTIONS = {
     },
     referer: (p) => `https://bbs.hupu.com/${p.tid}.html`,
     isSuccess: DEFAULT_SUCCESS
+  },
+
+  // ===========================================
+  // App 端 mobileapi 写操作（通过 hupu-new-sign header 鉴权）
+  // ===========================================
+  // 关键发现（2026-10）：notifyShareInfo 接口
+  //   - hupu-new-sign 头是 session-level 固定值（多次重发相同 sign 都过）
+  //   - body 里的 sign 字段是装饰，可省略
+  //   - bizId 必须对应真实存在的帖子（业务校验）
+  //   - crt/actionTime 任意填都行（不影响 sign）
+  // 抓包一次后填进 config.appAuth，重放稳定
+  notifyShare: {
+    label: 'App 分享上报',
+    url: () => 'https://bbs.mobileapi.hupu.com/1/8.2.63/bbsintapi/share/v1/notifyShareInfo',
+    body: (p) => {
+      const now = Date.now()
+      return {
+        assocID: String(p.bizId),
+        actionTime: now,
+        shareTitle: p.shareTitle || `分享帖子 ${p.bizId}`,
+        bizId: String(p.bizId),
+        sharePlatform: 1,
+        shareURL: p.shareURL || `https://m.hupu.com/bbs-share/${p.bizId}.html?share=share`,
+        shareType: '3',
+        cid: '177441061',
+        clientId: '177441061',
+        crt: String(now + 1400),
+        night: '0',
+        channel: 'huawei',
+        teenagers: '0',
+        time_zone: 'Asia/Shanghai',
+        // deviceId/token/sign 这些字段保留无害（body 的 sign 字段是装饰）
+        deviceId: '',
+        token: '',
+        sign: ''
+      }
+    },
+    headers: (p) => {
+      // 从 config.appAuth 读 App 端 session-level 固定 header
+      // 抓包后填进 config.json：hupu-mobile-sign / hupu-mobile-salt / hupu-mobile-token / hupu-mobile-cookie
+      const auth = p._appAuth || {}
+      return {
+        host: 'bbs.mobileapi.hupu.com',
+        'user-agent':
+          'Dalvik/2.1.0 (Linux; U; Android 12; 2304FPN6DC Build/W528JS) kanqiu/8.2.63.09241/12314',
+        'hupu-new-sign': auth.hupuMobileSign || '',
+        'hupu-encrypt-salt': auth.hupuMobileSalt || '',
+        'hupu-key-version': '1',
+        'x-hupu-token': auth.hupuMobileToken || '',
+        cookie: auth.hupuMobileCookie || ''
+      }
+    },
+    isSuccess: (data) => {
+      if (data?.returnCode === '00000000' || data?.code === 200) return { ok: true }
+      return { ok: false, reason: data?.msg || `code=${data?.code}` }
+    }
   }
 }
 
@@ -200,8 +256,12 @@ export async function executeAction(name, params, cookie) {
   const referer = action.referer?.(params)
   const method = action.method || 'POST'
 
-  const headers = { ...BASE_HEADERS, cookie: cookie || '' }
-  if (referer) headers.referer = referer
+  // 基础 header 走 web 端 pcmapi 协议；actions 可以通过 headers(p) 自定义覆盖
+  // 用于 App 端 mobileapi 接口（带 hupu-new-sign / hupu-encrypt-salt / x-hupu-token 等）
+  const baseExtra = { cookie: cookie || '' }
+  if (referer) baseExtra.referer = referer
+  const customHeaders = action.headers?.(params) || {}
+  const headers = { ...BASE_HEADERS, ...baseExtra, ...customHeaders }
 
   const response = await axios({ method, url, data, headers })
   const body = response.data || {}
@@ -331,6 +391,261 @@ export const SCRAPERS = {
         formatTime: r.formatTime || ''
       }))
       return { euid, source: url, count: items.length, items }
+    }
+  },
+
+  /**
+   * 抓取 NBA 资讯（ESPN JSON API + Yahoo RSS 双源）
+   * params: { hours?: number, maxItems?: number, includeMedia?: boolean }
+   * 默认：48 小时内最多 15 条；过滤掉纯集锦（type=Media）
+   * 返回：[{ source, title, link, description, pubDate, category, type }]
+   *
+   * 注：ESPN web 版 RSS (`espn.com/espn/rss/...`) 被 CloudFront WAF 拦截，
+   *    改用 `site.api.espn.com` 的 JSON 端点，UA 加上完整 Chrome UA。
+   *    Yahoo NBA RSS 在 redirect 后可用，会作为兜底（命中时合并）。
+   */
+  nbaNews: {
+    label: '抓取 NBA 资讯',
+    async run({ hours = 48, maxItems = 15, includeMedia = false } = {}) {
+      const cutoff = Date.now() - hours * 3600 * 1000
+      const all = []
+
+      // ESPN JSON API
+      try {
+        const url = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news?limit=50'
+        const res = await axios.get(url, {
+          headers: { 'user-agent': UA, accept: 'application/json' },
+          timeout: 12000
+        })
+        for (const art of res.data?.articles || []) {
+          const pubTs = new Date(art.published || 0).getTime()
+          const type = art.type || ''
+          // 默认过滤纯集锦；想保留就传 includeMedia
+          if (!includeMedia && type === 'Media') continue
+          if (!Number.isFinite(pubTs) || pubTs < cutoff) continue
+          const cat = (art.categories || [])[0] || {}
+          all.push({
+            source: 'espn-api',
+            title: String(art.headline || '').trim(),
+            link: art.links?.web?.href || '',
+            description: stripHtml(art.description || '').slice(0, 400),
+            pubDate: art.published,
+            pubTs,
+            category: cat.description || cat.type || '',
+            type
+          })
+        }
+      } catch (e) {
+        console.error('[nbaNews] ESPN API 抓取失败:', e.message)
+      }
+
+      // Yahoo NBA RSS 兜底（被 redirect 后才给 XML；不强制依赖）
+      try {
+        const url = 'https://sports.yahoo.com/nba/rss.xml'
+        const res = await axios.get(url, {
+          headers: { 'user-agent': UA, accept: 'application/rss+xml, application/xml, */*' },
+          timeout: 12000,
+          maxRedirects: 5
+        })
+        const $ = cheerio.load(res.data, { xmlMode: true })
+        $('item').each((_, el) => {
+          const $item = $(el)
+          const pubStr = $item.find('pubDate').text().trim()
+          const pubTs = new Date(pubStr).getTime()
+          if (!Number.isFinite(pubTs) || pubTs < cutoff) return
+          all.push({
+            source: 'yahoo-rss',
+            title: $item.find('title').text().trim(),
+            link: $item.find('link').text().trim(),
+            description: stripHtml($item.find('description').text()).slice(0, 400),
+            pubDate: pubStr,
+            pubTs,
+            category: $item.find('category').first().text().trim(),
+            type: 'rss'
+          })
+        })
+      } catch (e) {
+        console.error('[nbaNews] Yahoo RSS 抓取失败:', e.message)
+      }
+
+      // 按时间倒序，去重（title 完全相同视为同一则）
+      all.sort((a, b) => b.pubTs - a.pubTs)
+      const seen = new Set()
+      const dedup = []
+      for (const it of all) {
+        const key = it.title.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        dedup.push(it)
+      }
+
+      return {
+        cutoffIso: new Date(cutoff).toISOString(),
+        totalFetched: all.length,
+        count: dedup.length,
+        items: dedup.slice(0, maxItems)
+      }
+    }
+  },
+
+  /**
+   * 抓取 AI Agent 论文/报告（arXiv + HN + 公司博客）
+   * params: { days?: number, maxItems?: number }
+   * 默认：过去 7 天，最多 30 条（去重后）
+   * 返回：[{ source, title, abstract, link, pubTs, direction?, authors?, points?, ... }]
+   *
+   * 4 个方向关键词组合：
+   *   - multi-agent（多 Agent 协作/通信/失败恢复）
+   *   - context（上下文管理/记忆/长任务状态）
+   *   - local（本地 LLM / Agent runtime / 工具调用）
+   *   - sandbox（执行隔离/权限/容器/可复现环境）
+   */
+  aiPapers: {
+    label: '抓取 AI Agent 论文/报告',
+    async run({ days = 7, maxItems = 30 } = {}) {
+      const cutoffMs = Date.now() - days * 86400 * 1000
+      const all = []
+
+      // 1. arXiv：4 个方向各拉 12 篇
+      const ARXIV_QUERIES = [
+        { tag: 'multi-agent', q: 'all:%22multi-agent%22+AND+(all:collaboration+OR+all:coordination+OR+all:communication)' },
+        { tag: 'context', q: '(all:%22context+management%22+OR+all:memory+OR+all:%22long-context%22)+AND+all:agent' },
+        { tag: 'local', q: '(all:%22local+LLM%22+OR+all:%22agent+runtime%22+OR+all:%22tool+use%22)+AND+all:agent' },
+        { tag: 'sandbox', q: '(all:sandbox+OR+all:isolation+OR+all:%22code+execution%22)+AND+all:agent' }
+      ]
+      for (const { tag, q } of ARXIV_QUERIES) {
+        try {
+          const url = `http://export.arxiv.org/api/query?search_query=${q}&max_results=12&sortBy=submittedDate&sortOrder=descending`
+          const res = await axios.get(url, {
+            headers: { 'user-agent': UA },
+            timeout: 15000,
+            maxRedirects: 5
+          })
+          const $ = cheerio.load(res.data, { xmlMode: true })
+          $('entry').each((_, el) => {
+            const $e = $(el)
+            const idText = $e.find('id').text().trim()
+            const arxivId = idText.split('/').pop() || idText
+            const pubStr = $e.find('published').text().trim()
+            const pubTs = new Date(pubStr).getTime()
+            if (!Number.isFinite(pubTs) || pubTs < cutoffMs) return
+            all.push({
+              source: 'arxiv',
+              arxivId,
+              direction: tag,
+              title: $e.find('title').text().trim().replace(/\s+/g, ' '),
+              abstract: $e.find('summary').text().trim().replace(/\s+/g, ' ').slice(0, 800),
+              authors: $e.find('author name').map((_, a) => $(a).text().trim()).get().slice(0, 4),
+              primaryCategory: $e.find('category').first().attr('term') || '',
+              link: idText,
+              pdfLink: $e.find('link[title="pdf"]').attr('href') || '',
+              pubTs
+            })
+          })
+        } catch (e) {
+          console.error('[aiPapers] arxiv 抓取失败', tag, e.message)
+        }
+      }
+
+      // 2. HN Algolia：AI agent 相关热帖（社区投票 = 质量信号）
+      const HN_QUERIES = ['AI agent', 'LLM agent', 'multi-agent']
+      for (const q of HN_QUERIES) {
+        try {
+          const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(q)}&tags=story&numericFilters=created_at_i%3E${Math.floor(cutoffMs / 1000)}&hitsPerPage=10`
+          const res = await axios.get(url, {
+            headers: { 'user-agent': UA },
+            timeout: 12000
+          })
+          for (const h of res.data?.hits || []) {
+            const ts = h.created_at_i ? h.created_at_i * 1000 : 0
+            if (ts < cutoffMs) continue
+            all.push({
+              source: 'hn',
+              hnId: h.objectID,
+              direction: q,
+              title: h.title || h.story_title || '',
+              abstract: (h._tags?.includes('comment_text') ? '' : '') + (h.url || ''),
+              url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,
+              link: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,
+              points: h.points || 0,
+              comments: h.num_comments || 0,
+              pubTs: ts
+            })
+          }
+        } catch (e) {
+          console.error('[aiPapers] HN 抓取失败', q, e.message)
+        }
+      }
+
+      // 3. OpenAI News RSS
+      try {
+        const res = await axios.get('https://openai.com/news/rss.xml', {
+          headers: { 'user-agent': UA },
+          timeout: 12000
+        })
+        const $ = cheerio.load(res.data, { xmlMode: true })
+        $('item').slice(0, 8).each((_, el) => {
+          const $e = $(el)
+          const pubStr = $e.find('pubDate').text().trim()
+          const ts = new Date(pubStr).getTime()
+          if (!Number.isFinite(ts) || ts < cutoffMs) return
+          const link = $e.find('link').text().trim()
+          all.push({
+            source: 'openai-blog',
+            title: $e.find('title').text().trim(),
+            abstract: stripHtml($e.find('description').text()).slice(0, 600),
+            link,
+            pubTs: ts
+          })
+        })
+      } catch (e) {
+        console.error('[aiPapers] OpenAI blog 抓取失败:', e.message)
+      }
+
+      // 4. DeepMind Blog RSS（响应是 gzip，axios 自动解压）
+      try {
+        const res = await axios.get('https://deepmind.google/blog/rss.xml', {
+          headers: { 'user-agent': UA },
+          timeout: 12000,
+          decompress: true
+        })
+        const $ = cheerio.load(res.data, { xmlMode: true })
+        $('item').slice(0, 8).each((_, el) => {
+          const $e = $(el)
+          const pubStr = $e.find('pubDate').text().trim()
+          const ts = new Date(pubStr).getTime()
+          if (!Number.isFinite(ts) || ts < cutoffMs) return
+          const link = $e.find('link').text().trim()
+          all.push({
+            source: 'deepmind-blog',
+            title: $e.find('title').text().trim(),
+            abstract: stripHtml($e.find('description').text()).slice(0, 600),
+            link,
+            pubTs: ts
+          })
+        })
+      } catch (e) {
+        console.error('[aiPapers] DeepMind blog 抓取失败:', e.message)
+      }
+
+      // 去重：按 title 小写做 key
+      const seen = new Set()
+      const dedup = []
+      for (const it of all) {
+        const key = (it.title || '').toLowerCase().trim().slice(0, 80)
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        dedup.push(it)
+      }
+      // 按时间倒序
+      dedup.sort((a, b) => (b.pubTs || 0) - (a.pubTs || 0))
+
+      return {
+        cutoffIso: new Date(cutoffMs).toISOString(),
+        totalFetched: all.length,
+        count: dedup.length,
+        items: dedup.slice(0, maxItems)
+      }
     }
   },
 
