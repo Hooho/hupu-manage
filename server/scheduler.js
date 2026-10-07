@@ -975,6 +975,75 @@ async function dailyPostContentTask(ctx) {
   }
 }
 
+/**
+ * 每日分享 N 条帖子（默认 8 条不同帖子，间隔 30 秒）
+ * 抓首页/步行街最新列表 → 每条帖子 notifyShare 1 次
+ * 任务专属配置（taskSchedules['daily-share-x8']）：
+ *   shareCount: 分享条数（1-20，默认 8）
+ *   intervalMs: 每条间隔毫秒（0-10分钟，默认 30000）
+ *   url: 抓列表的 URL（默认 https://bbs.hupu.com/）
+ * 依赖：notifyShare action + config.appAuth（hupu-new-sign session header）
+ */
+async function dailyShareTask(ctx) {
+  const { log } = ctx
+  const config = await readConfig()
+  const appAuth = config.appAuth || {}
+
+  const taskCfg = (config.taskSchedules && config.taskSchedules['daily-share-x8']) || {}
+  const count = Math.max(1, Math.min(20, Number(taskCfg.shareCount) || 8))
+  const intervalMs = Math.max(0, Math.min(10 * 60_000, Number(taskCfg.intervalMs) || 30_000))
+  const url = taskCfg.url || 'https://bbs.hupu.com/'
+
+  log(`▶ 开始每日分享（${count} 条不同帖子，间隔 ${intervalMs / 1000}s，源=${url}）`, 'info')
+
+  // 1. 抓 N 条不同帖子
+  let items = []
+  try {
+    const listRes = await executeScraper('threads', { url })
+    items = (listRes.items || []).slice(0, count)
+  } catch (e) {
+    log(`✗ 抓列表失败: ${e.message}`, 'err')
+    return { error: e.message }
+  }
+  if (items.length === 0) {
+    log('✗ 抓列表为空，跳过', 'warn')
+    return { skipped: true, reason: 'empty threads' }
+  }
+  log(`  → 抓到 ${items.length} 条帖子作为分享源`, 'info')
+
+  // 2. notifyShare 每条帖子一次
+  const results = []
+  for (let i = 0; i < items.length; i++) {
+    const t = items[i]
+    try {
+      const r = await executeAction(
+        'notifyShare',
+        {
+          bizId: t.tid,
+          shareTitle: t.title || `分享帖子 ${t.tid}`,
+          shareURL: `https://bbs.hupu.com/${t.tid}.html`,
+          _appAuth: appAuth
+        },
+        ''
+      )
+      const ok = r.status === 200 || r.status === 'success'
+      results.push({ tid: t.tid, title: t.title, ok, msg: r.data?.msg || r.reason })
+      log(
+        `  [${i + 1}/${items.length}] ${ok ? '✓' : '✗'} tid=${t.tid} ${(t.title || '').slice(0, 30)}`,
+        ok ? 'info' : 'warn'
+      )
+    } catch (e) {
+      results.push({ tid: t.tid, title: t.title, ok: false, msg: e.message })
+      log(`  [${i + 1}/${items.length}] ✗ tid=${t.tid} 失败: ${e.message}`, 'err')
+    }
+    if (i < items.length - 1) await sleep(intervalMs)
+  }
+
+  const okCount = results.filter((r) => r.ok).length
+  log(`完成分享: ${okCount}/${results.length} 成功`, okCount === results.length ? 'info' : 'warn')
+  return { total: results.length, ok: okCount, results }
+}
+
 /* ===========================================================
    任务表（任务定义；schedule / enabled 由用户在 UI 配置）
    =========================================================== */
@@ -1007,6 +1076,14 @@ export const TASKS = [
       'AI 抓 arXiv + HN + 公司博客的论文/报告 → curator 选 1 篇 → writer 3段式撰写（核心结论/为什么值得看/对 Agent 设计的启发） → 发到指定板块',
     defaultSchedule: '12:00',
     run: dailyPostContentTask
+  },
+  {
+    id: 'daily-share-x8',
+    name: '每日分享（8 条不同帖子）',
+    description:
+      '抓步行街首页 N 条不同帖子 → 每条 notifyShare 1 次（间隔 30 秒）。shareCount 和 intervalMs 可在调度 Tab 调',
+    defaultSchedule: '08:00',
+    run: dailyShareTask
   }
 ]
 

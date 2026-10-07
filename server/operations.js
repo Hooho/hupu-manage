@@ -355,7 +355,9 @@ export const SCRAPERS = {
   /**
    * 抓取帖子列表
    * params: { url?: string } 默认 https://nba.hupu.com/
-   * 选择器：.list-item a[href*="bbs.hupu.com/"]
+   * 选择器：兼容两种页面
+   *   - NBA 列表（nba.hupu.com）：`.list-item a[href*="bbs.hupu.com/"]`，带 data-tid
+   *   - 步行街首页（bbs.hupu.com）：`a[href*="/\d+\.html"]`（相对路径）
    * 返回：[{ tid, title, board, link }]
    */
   threads: {
@@ -365,6 +367,8 @@ export const SCRAPERS = {
       const $ = cheerio.load(res.data)
       const items = []
       const seen = new Set()
+
+      // 1) NBA 列表：绝对路径 + data-tid
       $('.list-item a[href*="bbs.hupu.com/"]').each((_, el) => {
         const $a = $(el)
         const href = $a.attr('href') || ''
@@ -376,6 +380,23 @@ export const SCRAPERS = {
           items.push({ tid, title, board, link: href })
         }
       })
+
+      // 2) 步行街首页：相对路径 /<tid>.html（如果第一种没拿到才用，避免 NBA 抓到一堆噪声）
+      if (items.length === 0) {
+        $('a[href]').each((_, el) => {
+          const $a = $(el)
+          const href = $a.attr('href') || ''
+          const m = href.match(/^\/?(\d+)\.html$/)
+          if (!m) return
+          const tid = m[1]
+          const title = $a.text().trim()
+          if (tid && title && !seen.has(tid)) {
+            seen.add(tid)
+            items.push({ tid, title, board: '', link: href })
+          }
+        })
+      }
+
       return { source: url, count: items.length, items }
     }
   },
