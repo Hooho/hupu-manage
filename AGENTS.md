@@ -184,6 +184,7 @@ commit body 写清楚改动点和理由，避免"update files"这种空话。
 - 虎扑服务端偶发 502 是正常的，加 retry 或忽略
 - cookie 失效后所有接口返回空数据或 AS021999；让用户重新粘贴 cookie
 - **举报需经虎扑审核**：API 返回 success ≠ 真正生效（要等审核通过 reply 才会被删）。所以 reply 还出现在 `/api/replies` 列表里时都应该允许再次举报，不要按 operations.json 里的 submitted 字段去过滤列表。`operations.json` 的 `submitted` 字段语义是「已提交到虎扑审核队列」，不表示「举报生效」
+- **`maxTime` 是下一页 cursor**：Hupu `getReplyList` 的 `data.maxTime` 等于「当前页里 createTime 最早那条」的 timestamp。`/api/replies` 翻页必须把这个值存到 `progress.json`，**包括 page 1**——之前 `if (page !== 1)` 跳过保存，导致 page 2 用 backend 默认 `Date.now()` 当 cursor，出现重复/漏数据。page 1 用 `Date.now()`，page > 1 用 progress 里上次存的 maxTime。
 
 ## 12. 测试方法
 
