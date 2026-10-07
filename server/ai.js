@@ -75,6 +75,12 @@ export async function generateHupuReply({ config }) {
   const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   // 截取第一行 + 限制正文长度（92 字符，给 prefix 留 8 字符，总长 ≈100）
   const firstLine = cleaned.split('\n')[0].trim().replace(/^["「]|["」]$/g, '')
+  // 防御：reasoning 模型可能返回纯 <think> 块，清理后 firstLine 为空，
+  // 此时 prefix + 空字符串 = `minimax：` 这种没正文的内容会被虎扑判「请输入回帖内容」
+  // 必须 throw —— safeGenerateContent 会接住并重试
+  if (!firstLine) {
+    throw new Error('AI 返回内容只有 <think> 块或仅空白')
+  }
   return `${prefix}${firstLine.slice(0, 92)}`
 }
 
