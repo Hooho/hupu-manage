@@ -19,7 +19,10 @@ const PROVIDERS = {
   minimax: {
     name: 'MiniMax',
     baseUrl: 'https://api.MiniMax.chat/v1/chat/completions',
-    defaultModel: 'MiniMax-M3'
+    defaultModel: 'MiniMax-M3',
+    // 关掉 M3 默认开的 thinking（reasoning）模式，content 里就不会再有 <think>...</think> 块
+    // M2.x 系列 API 接受但忽略，DeepSeek 不识别也忽略 —— 都安全
+    thinkingDisabled: true
   }
 }
 
@@ -36,9 +39,6 @@ export async function generateHupuReply({ config }) {
   if (!ai || !ai.provider) throw new Error('未配置 AI provider')
   if (!ai.apiKey) throw new Error('未配置 AI API key')
 
-  const provider = PROVIDERS[ai.provider]
-  if (!provider) throw new Error(`未知 AI provider: ${ai.provider}`)
-  const model = ai.model || provider.defaultModel
   // 前缀：provider key + 中文全角冒号，例如 `minimax：` / `deepseek：`
   const prefix = `${ai.provider}：`
 
@@ -47,37 +47,20 @@ export async function generateHupuReply({ config }) {
 
   const userPrompt = '讲一个网上流行的爆款短笑话或梗，90字以内。'
 
-  const res = await axios.post(
-    provider.baseUrl,
-    {
-      model,
-      messages: [
-        { role: 'system', content: sysPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      max_tokens: 500,
-      temperature: 1.0
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${ai.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 60000
-    }
-  )
+  // 走 chat()：自动应用 thinking.disabled（M3 模型不会塞 <think> 块到 content）
+  const text = await chat({
+    ai,
+    messages: [
+      { role: 'system', content: sysPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    temperature: 1.0,
+    maxTokens: 500
+  })
 
-  const text = res.data?.choices?.[0]?.message?.content
-  if (!text) {
-    throw new Error('AI 返回内容为空')
-  }
-  // 去掉 <think>...</think> reasoning 块（reasoning 模型可能把思考塞进 content）
-  const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   // 截取第一行 + 限制正文长度（92 字符，给 prefix 留 8 字符，总长 ≈100）
-  const firstLine = cleaned.split('\n')[0].trim().replace(/^["「]|["」]$/g, '')
-  // 防御：reasoning 模型可能返回纯 <think> 块，清理后 firstLine 为空，
-  // 此时 prefix + 空字符串 = `minimax：` 这种没正文的内容会被虎扑判「请输入回帖内容」
-  // 必须 throw —— safeGenerateContent 会接住并重试
+  const firstLine = text.split('\n')[0].trim().replace(/^["「]|["」]$/g, '')
+  // 防御：reasoning 模型仍可能返回纯 <think> 块（不同版本行为不一致），chat() 已清理但兜底再查一次
   if (!firstLine) {
     throw new Error('AI 返回内容只有 <think> 块或仅空白')
   }
@@ -106,9 +89,16 @@ async function chat({ ai, messages, temperature = 1.0, maxTokens = 800 }) {
   if (!provider) throw new Error(`未知 AI provider: ${ai.provider}`)
   const model = ai.model || provider.defaultModel
 
+  const body = { model, messages, temperature, max_tokens: maxTokens }
+  // 关掉 thinking：让 M3 模型直接给答案，content 里不会再有 <think>...</think> 块
+  // provider.thinkingDisabled 标记哪些 provider 支持这个参数
+  if (provider.thinkingDisabled) {
+    body.thinking = { type: 'disabled' }
+  }
+
   const res = await axios.post(
     provider.baseUrl,
-    { model, messages, temperature, max_tokens: maxTokens },
+    body,
     {
       headers: {
         Authorization: `Bearer ${ai.apiKey}`,
@@ -119,6 +109,7 @@ async function chat({ ai, messages, temperature = 1.0, maxTokens = 800 }) {
   )
   const raw = res.data?.choices?.[0]?.message?.content || ''
   if (!raw) throw new Error('AI 返回内容为空')
+  // 兜底：万一模型还是塞了 think 块（不同版本行为可能不一致），清掉
   return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
 }
 
