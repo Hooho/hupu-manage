@@ -12,6 +12,20 @@ import * as cheerio from 'cheerio'
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'
 
+// =============================================================
+// App 端 reply 接口（bbsreplyapi/reply/v1/app/create）的固定 body
+// =============================================================
+// Hupu 的 sign 算法对 byte-for-byte 字符串算签名 —— 包括 `\/` 这种字面转义
+// JSON.stringify 默认不转义 `/`，所以如果 body 走对象 → axios 自动 stringify 会少 4 字节 `\/` 转义 → 403「签名异常」
+// 解法：直接把 capture 的原 body 当字面字符串返回，axios 看到 data 是字符串会原样发（不会 JSON.stringify）
+//
+// capture 时间：2026-10-07 17:39:29 UTC（whistle 抓包），base64 是 req.base64 字段
+// 解码后是 480 字节的 JSON 字符串（4 处 `\/` 字面转义）
+// 想换 tid / content / 任何字段都得重新抓包 —— 改了就 sign 失效
+// 完整 capture 文件：whistle 抓包目录 `...replay.txt` 的 req.base64（见抓包说明.md）
+const APP_REPLY_BODY =
+  '{"content":"<p>test<\\/p>","fid":"34","tid":"642813512","clientId":"177441061","crt":"1791394558460","night":"0","channel":"huawei","teenagers":"0","time_zone":"Asia\\/Shanghai","deviceId":"BNDC1fXSaHtp7yUnlSRKA1Dd+h28fgKDDApxYVnxWEoL4D6ty0QpQJc9RRGew531BzZCKJoJfNs1878KP4qNhLDYrNMx4N5\\/+nUlAB5+zy0aVDerWUSMh9WnQpfzrYPALXCB0E8u5u0aQYaxHlBPN0SEi\\/R6gosuf3MI8aZW4d4I=","token":"NDg0MjUxOTA=|MTc5MTM1OTk4OA==|eb13fbaf2fc8c4a811cc1886fc782bbe","sign":"b50cb334537ef8f2432824b69a5088a3"}'
+
 // 简易 HTML 标签剥除（用于 scraper 返回纯文本）
 function stripHtml(html) {
   return String(html)
@@ -232,6 +246,49 @@ export const ACTIONS = {
     isSuccess: (data) => {
       if (data?.returnCode === '00000000' || data?.code === 200) return { ok: true }
       return { ok: false, reason: data?.msg || `code=${data?.code}` }
+    }
+  },
+
+  // ===========================================
+  // App 端 createReply（v1/app/create）
+  // ===========================================
+  // 关键发现（2026-10）：bbsreplyapi/reply/v1/app/create
+  //   - body 的 sign 是真签名（跟 notifyShare 不同，那个 sign 是装饰）
+  //   - 改 body 任何字段都会 403「签名异常」
+  //   - body 全字段必须原样回放（crt/deviceId/token/sign 都锁死）
+  //   - header 的 hupu-new-sign 是 session-level 固定（跟 notifyShare 一样）
+  // 适用场景：刷固定帖子固定回复（增加声望）。换帖/换文需重新抓。
+  // 抓包时间：2026-10-07；首次验证 17:39:29 UTC，跨日重发 17:47:40 UTC 都成功
+  appReply: {
+    label: 'App 端回复帖子',
+    url: () => 'https://bbs.mobileapi.hupu.com/1/8.2.63/bbsreplyapi/reply/v1/app/create',
+    body: () => APP_REPLY_BODY,
+    headers: (p) => {
+      // 这个 action 自己用 reply 那次抓包时的 session header（2026-10-07）
+      // 跟 notifyShare 是不同 session，不能共用 config.appAuth
+      // capture 里的 hupu-new-sign / salt / x-hupu-token / cookie 必须原样回放
+      const auth = p._appAuth || {}
+      return {
+        host: 'bbs.mobileapi.hupu.com',
+        'user-agent':
+          'Dalvik/2.1.0 (Linux; U; Android 12; 2304FPN6DC Build/W528JS) kanqiu/8.2.63.09241/12314',
+        'hupu-new-sign': auth.appReplyHupuNewSign ||
+          'aabf8fdec572db6eb057a7eab5ec0cbd',
+        'hupu-encrypt-salt': auth.appReplyHupuEncryptSalt ||
+          'f1KcCtbl9FqdV74g95Axf83vVEUKs5gEhyvUIWA0gwjBYNMRAgFKiGwhK2RoedVCehfTHDbXxLL2jZ9NQaEITMU4wl3wd4qSclAfP4LaNxBJ7CAQesCX+D5qTXObBrC5JyPAerLfHbzqlq9IzpZeytGEd1kd04a8aPhv82P5OhJ/vQSkb0/XAHphILLm9rLyOrcsiHZk+wYK2jR7lVD/thX0l+za5izFm3UbWL7Hy8CLGu4WVHdsxXnlwpCElawzoLkv7COiiVvOC5OilEYiRoU0AfIDPDTs1E8mTxOEMKTXlPJHj8b34gY5cDP9W/UF8UY5uuja+EWzJD8ZZrP3uw==',
+        'hupu-key-version': '1',
+        'x-hupu-token': auth.appReplyXHupuToken ||
+          '98833334|5q P5aSp55SoQUnnlJ/miJA1MOWtl eskeivneWbnuWkjQ==|04c3|c32d9d20ea717f94ef77f3b850521701|4456ee9e5407089f|aHVwdV9mZWEyYmIzNDk3Y2QxMzlj:51182681:f9a3116a8bdc5bf4ebdc705b1aff344da9f409eb975468aea7a8df2ba9244222da21406d7f94050f98da93d6ccd89d852a660c892251f4b6ff26b802c96084fe',
+        cookie: auth.appReplyCookie ||
+          'u=98833334%7C5q%2BP5aSp55SoQUnnlJ%2FmiJA1MOWtl%2BeskeivneWbnuWkjQ%3D%3D%7C04c3%7Cc32d9d20ea717f94ef77f3b850521701%7C4456ee9e5407089f%7CaHVwdV9mZWEyYmIzNDk3Y2QxMzlj; domain=.ideepu.com; expires=Sat, 04-Oct-2036 07:59:48 GMT; path=/; httponly; cpck=eyJpZGZhIjoiIiwiY2xpZW50IjoiZjA1ODk5YTJhZWUwMjI4MSIsInByb2plY3RJZCI6MX0%3D; _gamesu=NDg0MjUxOTA%3D%7CMTc5MTM1OTk4OA%3D%3D%7Ceb13fbaf2fc8c4a811cc1886fc782bbe; ua=51182681; pctpct=tTZaxTlVT9JRij3%2Fl%2BbRxHsWbg4%2BTlc8HXmbDMPs8O4%3D',
+        'content-type': 'application/json;charset=UTF-8'
+      }
+    },
+    isSuccess: (data) => {
+      // 成功：status === "200" + result.pid 是新回帖 id
+      // 失败：status === "403" 之类 + msg（如「签名异常」）
+      if (String(data?.status) === '200' && data?.result?.pid) return { ok: true }
+      return { ok: false, reason: data?.msg || `status=${data?.status}` }
     }
   }
 }
