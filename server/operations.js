@@ -311,11 +311,14 @@ export const ACTIONS = {
     url: () => 'https://games.mobileapi.hupu.com/1/8.2.63/bplapi/user/v1/addFollow',
     body: (p) => {
       const cfg = p._appFollowConfig || {}
-      const map = cfg.addFollow || {}
+      // per-account 结构：cfg[fromAccountId].addFollow[buddyPuid]
+      const fromId = p._fromAccountId || (p._account && p._account.id) || 'A'
+      const accCfg = cfg[fromId] || {}
+      const map = accCfg.addFollow || {}
       const puid = String(p.buddyPuid || '98884021')
       if (!map[puid]) {
         throw new Error(
-          `appFollow 未配置 buddyPuid=${puid} 的 capture body —— 加新 puid 必须重新抓包填进 config.appFollowConfig.addFollow`
+          `appFollow 未配置 账号 ${fromId} → buddyPuid=${puid} 的 capture body —— 加新 puid 必须重新抓包填进 config.appFollowConfig.${fromId}.addFollow`
         )
       }
       return map[puid]
@@ -337,11 +340,13 @@ export const ACTIONS = {
     url: () => 'https://games.mobileapi.hupu.com/1/8.2.63/bplapi/user/v1/delFollow',
     body: (p) => {
       const cfg = p._appFollowConfig || {}
-      const map = cfg.delFollow || {}
+      const fromId = p._fromAccountId || (p._account && p._account.id) || 'A'
+      const accCfg = cfg[fromId] || {}
+      const map = accCfg.delFollow || {}
       const puid = String(p.buddyPuid || '98884021')
       if (!map[puid]) {
         throw new Error(
-          `appUnfollow 未配置 buddyPuid=${puid} 的 capture body —— 加新 puid 必须重新抓包填进 config.appFollowConfig.delFollow`
+          `appUnfollow 未配置 账号 ${fromId} → buddyPuid=${puid} 的 capture body —— 加新 puid 必须重新抓包填进 config.appFollowConfig.${fromId}.delFollow`
         )
       }
       return map[puid]

@@ -984,6 +984,124 @@ async function dailyPostContentTask(ctx) {
  *   url: 抓列表的 URL（默认 https://bbs.hupu.com/）
  * 依赖：notifyShare action + config.appAuth（hupu-new-sign session header）
  */
+/**
+ * 每日关注/取关任务（刷互关声望）
+ *
+ * taskCfg：
+ *   - accountIds: 参与的账号 id 列表（默认主账号）
+ *   - buddyPuids: 要刷的目标 puid 列表
+ *   - rounds: 每对 (from, to) 反复 add+del 几轮（默认 4）
+ *   - intervalMs: add 与 del 之间的间隔毫秒（默认 2000）
+ *
+ * 依赖：appFollow/appUnfollow actions + config.appFollowConfig[(accountId, buddyPuid)]
+ * 每对 (from_account, to_puid) 必须有对应的 capture body（addFollow + delFollow 各一）
+ */
+async function dailyFollowTask(ctx) {
+  const { log, accounts } = ctx
+  const config = await readConfig()
+  const taskCfg = (config.taskSchedules && config.taskSchedules['daily-follow-x4']) || {}
+
+  const selectedIds =
+    Array.isArray(taskCfg.accountIds) && taskCfg.accountIds.length > 0
+      ? taskCfg.accountIds
+      : accounts.find((a) => a.primary)?.id
+      ? [accounts.find((a) => a.primary).id]
+      : []
+  const buddyPuids = Array.isArray(taskCfg.buddyPuids) ? taskCfg.buddyPuids : []
+  const rounds = Math.max(1, Math.min(50, Number(taskCfg.rounds) || 4))
+  const intervalMs = Math.max(0, Math.min(60_000, Number(taskCfg.intervalMs) || 2000))
+
+  if (buddyPuids.length === 0) {
+    log('▶ 未配置 buddyPuids，跳过', 'warn')
+    return { skipped: true, reason: 'no buddyPuids' }
+  }
+
+  log(
+    `▶ 每日关注：${selectedIds.length} 账号 × ${buddyPuids.length} puid × ${rounds} 轮，间隔 ${intervalMs}ms`,
+    'info'
+  )
+
+  const results = []
+  for (const fromId of selectedIds) {
+    const account = accounts.find((a) => a.id === fromId)
+    if (!account) {
+      log(`  跳过账号 ${fromId}（不存在）`, 'warn')
+      continue
+    }
+    const accFollowCfg = (config.appFollowConfig || {})[fromId] || {}
+    const hasAny = accFollowCfg.addFollow || accFollowCfg.delFollow
+    if (!hasAny) {
+      log(
+        `  跳过账号 ${account.name || fromId}（未配置 appFollowConfig.${fromId}）`,
+        'warn'
+      )
+      continue
+    }
+    log(`  ▶ ${account.name || fromId}（id=${fromId}）`, 'info')
+
+    for (const toPuid of buddyPuids) {
+      log(`    → buddyPuid=${toPuid}`, 'info')
+
+      for (let round = 1; round <= rounds; round++) {
+        // addFollow
+        try {
+          const r = await executeAction(
+            'appFollow',
+            {
+              buddyPuid: toPuid,
+              _fromAccountId: fromId,
+              _account: account,
+              _appFollowConfig: config.appFollowConfig || {}
+            },
+            ''
+          )
+          const ok = r.status === 200 || r.status === 'success'
+          results.push({ fromId, toPuid, round, type: 'add', ok, msg: r.data?.msg })
+          log(
+            `      [${round}/${rounds}] add ${ok ? '✓' : '✗'} ${r.data?.msg || r.reason || ''}`,
+            ok ? 'info' : 'warn'
+          )
+        } catch (e) {
+          results.push({ fromId, toPuid, round, type: 'add', ok: false, msg: e.message })
+          log(`      [${round}/${rounds}] add ✗ ${e.message}`, 'err')
+        }
+        await sleep(intervalMs)
+
+        // delFollow
+        try {
+          const r = await executeAction(
+            'appUnfollow',
+            {
+              buddyPuid: toPuid,
+              _fromAccountId: fromId,
+              _account: account,
+              _appFollowConfig: config.appFollowConfig || {}
+            },
+            ''
+          )
+          const ok = r.status === 200 || r.status === 'success'
+          results.push({ fromId, toPuid, round, type: 'del', ok, msg: r.data?.msg })
+          log(
+            `      [${round}/${rounds}] del ${ok ? '✓' : '✗'} ${r.data?.msg || r.reason || ''}`,
+            ok ? 'info' : 'warn'
+          )
+        } catch (e) {
+          results.push({ fromId, toPuid, round, type: 'del', ok: false, msg: e.message })
+          log(`      [${round}/${rounds}] del ✗ ${e.message}`, 'err')
+        }
+        await sleep(intervalMs)
+      }
+    }
+  }
+
+  const okCount = results.filter((r) => r.ok).length
+  log(
+    `总关注/取关: ${okCount}/${results.length} 成功`,
+    okCount === results.length ? 'info' : 'warn'
+  )
+  return { total: results.length, ok: okCount, results }
+}
+
 async function dailyShareTask(ctx) {
   const { log, accounts } = ctx
   const config = await readConfig()
@@ -1125,6 +1243,14 @@ export const TASKS = [
       '抓步行街首页 N 条不同帖子 → 每条 notifyShare 1 次（间隔 30 秒）。shareCount 和 intervalMs 可在调度 Tab 调',
     defaultSchedule: '08:00',
     run: dailyShareTask
+  },
+  {
+    id: 'daily-follow-x4',
+    name: '每日关注/取关（4 次互刷）',
+    description:
+      '每对 (from账号 → to puid) 做 N 次 addFollow + delFollow 反复（每对 = 1 次），间隔几秒。需每 (账号, puid) 抓包填 config.appFollowConfig',
+    defaultSchedule: '10:00',
+    run: dailyFollowTask
   }
 ]
 

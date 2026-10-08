@@ -949,6 +949,14 @@ function ScheduleTab() {
                     onSave={(patch) => save(t.id, patch)}
                   />
                 )}
+                {t.id === 'daily-follow-x4' && (
+                  <FollowTaskCfgRow
+                    accounts={accounts}
+                    taskCfg={t.taskCfg || {}}
+                    primaryId={(accounts.find((a) => a.primary) || {}).id}
+                    onSave={(patch) => save(t.id, patch)}
+                  />
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1455,6 +1463,161 @@ function ShareTaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
             style={{ width: 100, marginLeft: 6 }}
           />
         </label>
+      </div>
+    </div>
+  )
+}
+
+/* ===========================================================
+   每日关注/取关任务配置（账号多选 + buddyPuids + rounds + intervalMs）
+   =========================================================== */
+function FollowTaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
+  const [selectedIds, setSelectedIds] = useState(
+    Array.isArray(taskCfg.accountIds) && taskCfg.accountIds.length > 0
+      ? taskCfg.accountIds
+      : primaryId
+      ? [primaryId]
+      : []
+  )
+  const [buddyPuidsText, setBuddyPuidsText] = useState(
+    Array.isArray(taskCfg.buddyPuids) ? taskCfg.buddyPuids.join(', ') : ''
+  )
+  const [rounds, setRounds] = useState(Number(taskCfg.rounds) || 4)
+  const [intervalMs, setIntervalMs] = useState(Number(taskCfg.intervalMs) || 2000)
+
+  useEffect(() => {
+    if (Array.isArray(taskCfg.accountIds)) setSelectedIds(taskCfg.accountIds)
+    if (Array.isArray(taskCfg.buddyPuids)) setBuddyPuidsText(taskCfg.buddyPuids.join(', '))
+    if (typeof taskCfg.rounds === 'number') setRounds(taskCfg.rounds)
+    if (typeof taskCfg.intervalMs === 'number') setIntervalMs(taskCfg.intervalMs)
+  }, [taskCfg])
+
+  const toggleAccount = (id) => {
+    setSelectedIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+      onSave({ accountIds: next })
+      return next
+    })
+  }
+
+  const commitBuddyPuids = (text) => {
+    const list = text
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    onSave({ buddyPuids: list })
+  }
+
+  const commitRounds = (n) => {
+    const v = Math.max(1, Math.min(50, Math.floor(Number(n) || 4)))
+    setRounds(v)
+    onSave({ rounds: v })
+  }
+
+  const commitInterval = (n) => {
+    const v = Math.max(0, Math.min(60_000, Math.floor(Number(n) || 2000)))
+    setIntervalMs(v)
+    onSave({ intervalMs: v })
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: '10px 12px',
+        background: 'var(--bg-2)',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-13)'
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap'
+        }}
+      >
+        <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>账号</span>
+        {accounts.length === 0 ? (
+          <span style={{ color: 'var(--text-3)' }}>（先去「账号」tab 添加）</span>
+        ) : (
+          accounts.map((a) => (
+            <label
+              key={a.id}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                cursor: 'pointer'
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(a.id)}
+                onChange={() => toggleAccount(a.id)}
+              />
+              <span
+                style={{
+                  fontWeight: a.id === primaryId ? 600 : 400,
+                  color: a.primary ? 'var(--accent)' : 'var(--text-2)'
+                }}
+              >
+                {a.name || `账号 ${a.id}`}
+                {a.primary && <span style={{ fontSize: 11, marginLeft: 4 }}>⭐</span>}
+              </span>
+            </label>
+          ))
+        )}
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          gap: 12,
+          marginTop: 10,
+          alignItems: 'center',
+          flexWrap: 'wrap'
+        }}
+      >
+        <label style={{ color: 'var(--text-2)' }}>
+          目标 puid（逗号分隔）
+          <input
+            className="input"
+            value={buddyPuidsText}
+            onChange={(e) => setBuddyPuidsText(e.target.value)}
+            onBlur={(e) => commitBuddyPuids(e.target.value)}
+            placeholder="98884021, 98833334"
+            style={{ width: 240, marginLeft: 6 }}
+          />
+        </label>
+        <label style={{ color: 'var(--text-2)' }}>
+          每对轮数
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={50}
+            value={rounds}
+            onChange={(e) => commitRounds(e.target.value)}
+            style={{ width: 60, marginLeft: 6 }}
+          />
+        </label>
+        <label style={{ color: 'var(--text-2)' }}>
+          间隔（毫秒）
+          <input
+            className="input"
+            type="number"
+            min={0}
+            max={60_000}
+            step={500}
+            value={intervalMs}
+            onChange={(e) => commitInterval(e.target.value)}
+            style={{ width: 90, marginLeft: 6 }}
+          />
+        </label>
+      </div>
+      <div style={{ marginTop: 8, color: 'var(--text-3)', fontSize: 'var(--fs-12)' }}>
+        ⚠️ 每个 (账号, puid) 组合需先在 server/data/config.json 的 appFollowConfig 抓包填好（per-account capture body），否则会报错跳过
       </div>
     </div>
   )

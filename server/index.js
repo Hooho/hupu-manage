@@ -798,7 +798,12 @@ app.patch('/api/scheduler/task/:id', async (req, res) => {
       // 任务专属配置（目前 daily-post-content 用）
       accountIds,
       postsPerAccount,
-      fid
+      fid,
+      // daily-share-x8 / daily-follow-x4 专属字段
+      shareCount,
+      intervalMs,
+      buddyPuids,
+      rounds
     } = req.body || {}
     const patch = {}
     if (typeof enabled === 'boolean') patch.enabled = enabled
@@ -814,10 +819,25 @@ app.patch('/api/scheduler/task/:id', async (req, res) => {
     if (typeof fid === 'number' && Number.isFinite(fid) && fid > 0) {
       patch.fid = Math.floor(fid)
     }
+    // daily-share-x8 / daily-follow-x4 专属字段
+    if (typeof shareCount === 'number' && Number.isFinite(shareCount)) {
+      patch.shareCount = Math.max(1, Math.min(20, Math.floor(shareCount)))
+    }
+    if (typeof intervalMs === 'number' && Number.isFinite(intervalMs)) {
+      patch.intervalMs = Math.max(0, Math.min(10 * 60_000, Math.floor(intervalMs)))
+    }
+    if (Array.isArray(buddyPuids)) {
+      patch.buddyPuids = buddyPuids
+        .filter((x) => typeof x === 'string' || typeof x === 'number')
+        .map((x) => String(x))
+    }
+    if (typeof rounds === 'number' && Number.isFinite(rounds)) {
+      patch.rounds = Math.max(1, Math.min(50, Math.floor(rounds)))
+    }
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({
         error:
-          '需要 enabled:boolean / schedule:HH:MM / accountIds:string[] / postsPerAccount:number(1-5) / fid:number 至少一个'
+          '需要 enabled:boolean / schedule:HH:MM / accountIds:string[] / postsPerAccount:number(1-5) / fid:number / shareCount:number / intervalMs:number / buddyPuids:string[] / rounds:number 至少一个'
       })
     }
     const r = await setTaskConfig(req.params.id, patch)
