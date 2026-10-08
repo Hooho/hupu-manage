@@ -117,6 +117,32 @@ app.get('/api/config', async (req, res) => {
   res.json(config)
 })
 
+// App 端 mobileapi 接口的 session 配置（4 个 app 操作共用一套配置结构）
+app.get('/api/app-sessions', async (req, res) => {
+  const config = await readConfig()
+  res.json(config.appSessions || {})
+})
+
+// 更新单个 session
+// body: { label?, host?, userAgent?, hupuNewSign?, hupuEncryptSalt?, xHupuToken?, cookie? }
+// 只覆盖传的字段，其他保持原值
+app.put('/api/app-sessions/:key', async (req, res) => {
+  const { key } = req.params
+  const config = await readConfig()
+  if (!config.appSessions || !config.appSessions[key]) {
+    return res.status(404).json({ error: `未知 session: ${key}` })
+  }
+  // 白名单字段，避免外部塞额外字段污染 config
+  const ALLOWED = ['label', 'host', 'userAgent', 'hupuNewSign', 'hupuEncryptSalt', 'xHupuToken', 'cookie']
+  const patch = {}
+  for (const k of ALLOWED) {
+    if (req.body[k] !== undefined) patch[k] = String(req.body[k])
+  }
+  config.appSessions[key] = { ...config.appSessions[key], ...patch }
+  await saveConfig(config)
+  res.json({ ok: true, session: config.appSessions[key] })
+})
+
 // 保存配置
 app.post('/api/config', async (req, res) => {
   await saveConfig(req.body)
@@ -306,13 +332,12 @@ app.post('/api/action/:name', async (req, res) => {
   try {
     const cookie = await getPrimaryCookie()
     if (!cookie) return res.status(400).json({ error: '未配置主账号 Cookie' })
-    // App 端 mobileapi 接口需要从 config.appAuth 读 session-level 固定 header
-    // （hupu-new-sign / hupu-encrypt-salt / x-hupu-token / hupu-mobile-cookie）
-    // 抓包一次后填进 config.json，重放可稳定
+    // App 端 mobileapi 接口需要从 config.appSessions 读 session-level 固定 header
+    // 按 action key 取（reply/follow/share），抓包一次后填进 config.json
     const config = await readConfig()
     const params = {
       ...req.body,
-      _appAuth: config.appAuth || {},
+      _appSessions: config.appSessions || {},
       _appFollowConfig: config.appFollowConfig || {}
     }
     const { data, idempotent, reason } = await executeAction(name, params, cookie)
