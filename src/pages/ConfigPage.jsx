@@ -1362,12 +1362,22 @@ function ShareTaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
           <span style={{ color: 'var(--text-3)' }}>（先去「账号」tab 添加）</span>
         ) : (
           accounts.map((a) => {
-            const hasShare = a.appSessions && a.appSessions.share
-            const disabled = !hasShare
+            const s = a.appSessions && a.appSessions.share
+            const auth = a.appAuth || {}
+            // 校验完整：session 必须有 sign/salt，账号必须有 token/cookie
+            const missing = []
+            if (!s) missing.push('appSessions.share')
+            else {
+              if (!s.hupuNewSign) missing.push('hupuNewSign')
+              if (!s.hupuEncryptSalt) missing.push('hupuEncryptSalt')
+            }
+            if (!auth.xHupuToken) missing.push('appAuth.xHupuToken')
+            if (!auth.cookie) missing.push('appAuth.cookie')
+            const disabled = missing.length > 0
             return (
               <label
                 key={a.id}
-                title={disabled ? '该账号未配置 appSessions.share，跳过' : ''}
+                title={disabled ? `缺字段：${missing.join(', ')}，去账号 Tab 配` : ''}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -1393,7 +1403,9 @@ function ShareTaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
                     <span style={{ fontSize: 11, marginLeft: 4 }}>⭐</span>
                   )}
                   {disabled && (
-                    <span style={{ fontSize: 11, marginLeft: 4, color: 'var(--text-3)' }}>未配 share</span>
+                    <span style={{ fontSize: 11, marginLeft: 4, color: 'var(--text-3)' }}>
+                      未配 ({missing.join(', ')})
+                    </span>
                   )}
                 </span>
               </label>

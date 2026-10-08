@@ -1036,6 +1036,21 @@ async function dailyShareTask(ctx) {
       )
       continue
     }
+    // 校验 session 必填字段（per-request sign/salt 空值会发空签名导致 403）
+    const s = account.appSessions.share
+    const missing = []
+    if (!s.hupuNewSign) missing.push('hupu-new-sign')
+    if (!s.hupuEncryptSalt) missing.push('hupu-encrypt-salt')
+    const auth = account.appAuth || {}
+    if (!auth.xHupuToken) missing.push('appAuth.x-hupu-token')
+    if (!auth.cookie) missing.push('appAuth.cookie')
+    if (missing.length > 0) {
+      log(
+        `  跳过账号 ${account.name || accId}（appSessions.share 缺字段：${missing.join(', ')}）`,
+        'warn'
+      )
+      continue
+    }
     log(`  ▶ ${account.name || accId}（id=${accId}）`, 'info')
 
     for (let i = 0; i < items.length; i++) {
