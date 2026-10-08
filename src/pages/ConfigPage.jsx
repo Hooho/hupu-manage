@@ -31,6 +31,9 @@ function ConfigPage() {
   // capture 粘贴区
   const [captureInput, setCaptureInput] = useState('')
   const [captureParseMsg, setCaptureParseMsg] = useState('')
+  // 每个 session 独立 capture 输入（按接口分开抓）
+  const [sessionCaptures, setSessionCaptures] = useState({ reply: '', follow: '', share: '' })
+  const [sessionParseMsgs, setSessionParseMsgs] = useState({ reply: '', follow: '', share: '' })
   const startEdit = (a) =>
     setEditingAccount({
       id: a.id,
@@ -221,6 +224,43 @@ function ConfigPage() {
     }
     setEditingAccount({ ...editingAccount, appSessions: updates })
     setCaptureParseMsg(`✓ 已填 ${sk} session（hupu-new-sign + hupu-encrypt-salt${sk === 'follow' ? ' + body' : ''}）`)
+  }
+
+  // 强制把 capture 应用到指定 session（忽略 URL 推断），用于「按 session 分开粘贴」
+  const applyParsedToSession = (sessionKey, text) => {
+    const parsed = parseCapture(text)
+    if (!parsed) {
+      setSessionParseMsgs((m) => ({ ...m, [sessionKey]: '✗ 解析失败' }))
+      return
+    }
+    const updates = { ...(editingAccount.appSessions || {}) }
+    updates[sessionKey] = {
+      ...(updates[sessionKey] || {}),
+      hupuNewSign: parsed.headers['hupu-new-sign'] || '',
+      hupuEncryptSalt: parsed.headers['hupu-encrypt-salt'] || ''
+    }
+    // follow 接口额外存 body（addFollow/delFollow 的 body 是 form-encoded，跟 sign 绑定）
+    if (sessionKey === 'follow' && parsed.body) {
+      updates[sessionKey].body = parsed.body
+    }
+    // 账号共享字段：x-hupu-token 和 cookie 也填上（即使 capture 来自其他接口，token/cookie 通常不变）
+    const authUpdates = { ...(editingAccount.appAuth || {}) }
+    if (parsed.headers['x-hupu-token']) authUpdates.xHupuToken = parsed.headers['x-hupu-token']
+    if (parsed.headers.cookie) authUpdates.cookie = parsed.headers.cookie
+
+    setEditingAccount({
+      ...editingAccount,
+      appAuth: authUpdates,
+      appSessions: updates
+    })
+    const filled = [
+      parsed.headers['hupu-new-sign'] && 'hupu-new-sign',
+      parsed.headers['hupu-encrypt-salt'] && 'hupu-encrypt-salt',
+      sessionKey === 'follow' && parsed.body && 'body',
+      parsed.headers['x-hupu-token'] && 'appAuth.x-hupu-token',
+      parsed.headers.cookie && 'appAuth.cookie'
+    ].filter(Boolean)
+    setSessionParseMsgs((m) => ({ ...m, [sessionKey]: `✓ 已填 ${filled.join(', ')}` }))
   }
 
   useEffect(() => {
@@ -755,6 +795,18 @@ function ConfigPage() {
                               }}
                             >
                               {s.key}
+                              <span
+                                style={{
+                                  marginLeft: 8,
+                                  color: 'var(--text-3)',
+                                  fontWeight: 400,
+                                  fontSize: 11
+                                }}
+                              >
+                                {s.key === 'reply' && '→ 帖子回复（body.sign 是真签名）'}
+                                {s.key === 'follow' && '→ 关注/取关（form-encoded body 绑定）'}
+                                {s.key === 'share' && '→ 分享上报（body.sign 是装饰）'}
+                              </span>
                             </div>
                             <div className="field" style={{ marginBottom: 10 }}>
                               <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>hupu-new-sign</label>
@@ -765,7 +817,7 @@ function ConfigPage() {
                                 style={{ fontFamily: 'ui-monospace, SFMono-Regular, monospace', fontSize: 12 }}
                               />
                             </div>
-                            <div className="field" style={{ marginBottom: 0 }}>
+                            <div className="field" style={{ marginBottom: 10 }}>
                               <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>hupu-encrypt-salt</label>
                               <textarea
                                 className="textarea"
@@ -777,6 +829,72 @@ function ConfigPage() {
                                   minHeight: 60
                                 }}
                               />
+                            </div>
+
+                            {/* 该 session 的 capture 粘贴区（按接口分开存） */}
+                            <div
+                              style={{
+                                borderTop: '1px dashed var(--line)',
+                                paddingTop: 8,
+                                marginTop: 4
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: 'var(--fs-11)',
+                                  color: 'var(--text-3)',
+                                  marginBottom: 4,
+                                  fontFamily: 'ui-monospace, SFMono-Regular, monospace'
+                                }}
+                              >
+                                📋 粘 {s.key} capture（whistle JSON / cURL / 原始 HTTP）
+                              </div>
+                              <textarea
+                                className="textarea"
+                                value={sessionCaptures[s.key] || ''}
+                                onChange={(e) =>
+                                  setSessionCaptures((m) => ({ ...m, [s.key]: e.target.value }))
+                                }
+                                placeholder="粘到这里，点下方按钮只填本 session 的字段"
+                                style={{
+                                  fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                                  fontSize: 11,
+                                  minHeight: 60
+                                }}
+                              />
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => applyParsedToSession(s.key, sessionCaptures[s.key] || '')}
+                                  disabled={!(sessionCaptures[s.key] || '').trim()}
+                                >
+                                  解析填本 session
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    setSessionCaptures((m) => ({ ...m, [s.key]: '' }))
+                                    setSessionParseMsgs((m) => ({ ...m, [s.key]: '' }))
+                                  }}
+                                >
+                                  清空
+                                </Button>
+                              </div>
+                              {sessionParseMsgs[s.key] && (
+                                <div
+                                  style={{
+                                    marginTop: 4,
+                                    fontSize: 'var(--fs-11)',
+                                    color: sessionParseMsgs[s.key].startsWith('✗')
+                                      ? 'var(--danger)'
+                                      : 'var(--success)'
+                                  }}
+                                >
+                                  {sessionParseMsgs[s.key]}
+                                </div>
+                              )}
                             </div>
                           </div>
                         )
