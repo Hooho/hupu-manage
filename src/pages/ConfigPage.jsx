@@ -34,6 +34,7 @@ function ConfigPage() {
       name: a.name || '',
       euid: a.euid || '',
       cookie: a.cookie || '',
+      appAuth: a.appAuth || {},
       appSessions: a.appSessions || { reply: {}, follow: {}, share: {} }
     })
 
@@ -86,7 +87,10 @@ function ConfigPage() {
     if (editingAccount.cookie && editingAccount.cookie.trim()) {
       patch.cookie = editingAccount.cookie.trim()
     }
-    // appSessions 一并保存（per-account 配置，跟账号绑定）
+    // appAuth + appSessions 一并保存（per-account 配置，跟账号绑定）
+    if (editingAccount.appAuth) {
+      patch.appAuth = editingAccount.appAuth
+    }
     if (editingAccount.appSessions) {
       patch.appSessions = editingAccount.appSessions
     }
@@ -98,6 +102,13 @@ function ConfigPage() {
     } catch (e) {
       toast.error('保存失败: ' + e.message)
     }
+  }
+
+  const updateAppAuth = (field, value) => {
+    setEditingAccount({
+      ...editingAccount,
+      appAuth: { ...(editingAccount.appAuth || {}), [field]: value }
+    })
   }
 
   const updateAppSession = (sessionKey, field, value) => {
@@ -407,12 +418,77 @@ function ConfigPage() {
                       <span className="field-hint">仅修改时粘贴新的；不填保留原 cookie</span>
                     </div>
 
-                    {/* App 认证子区块（per-account，3 个 session） */}
+                    {/* App 认证子区块 —— 账号共享 + 每个接口 */}
                     <div className="field">
                       <label className="field-label">App 认证（可选）</label>
                       <span className="field-hint">
-                        用于 notifyShare / appReply / appFollow 等 mobileapi 操作。session 过期只需在这改 cookie 保存。详见抓包说明.md
+                        用于 notifyShare / appReply / appFollow 等 mobileapi 操作。
+                        userAgent / x-hupu-token / cookie 三个字段账号级共享；
+                        host / hupu-new-sign / hupu-encrypt-salt 每个接口单独配（per-request 变）。
+                        详见抓包说明.md
                       </span>
+                    </div>
+
+                    {/* 账号共享 3 字段 */}
+                    <div
+                      style={{
+                        border: '1px solid var(--line)',
+                        borderRadius: 'var(--r-sm)',
+                        padding: 12,
+                        marginBottom: 12,
+                        background: 'var(--bg-2)'
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 'var(--fs-12)',
+                          fontWeight: 500,
+                          color: 'var(--accent)',
+                          fontFamily: 'ui-monospace, SFMono-Regular, monospace'
+                        }}
+                      >
+                        📱 账号共享（3 字段）
+                      </div>
+                      <div className="field" style={{ marginTop: 8, marginBottom: 10 }}>
+                        <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>user-agent</label>
+                        <input
+                          className="input"
+                          value={editingAccount.appAuth?.userAgent || ''}
+                          onChange={(e) => updateAppAuth('userAgent', e.target.value)}
+                        />
+                      </div>
+                      <div className="field" style={{ marginBottom: 10 }}>
+                        <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>x-hupu-token</label>
+                        <textarea
+                          className="textarea"
+                          value={editingAccount.appAuth?.xHupuToken || ''}
+                          onChange={(e) => updateAppAuth('xHupuToken', e.target.value)}
+                          style={{
+                            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                            fontSize: 12,
+                            minHeight: 60
+                          }}
+                        />
+                      </div>
+                      <div className="field" style={{ marginBottom: 0 }}>
+                        <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>cookie</label>
+                        <textarea
+                          className="textarea"
+                          value={editingAccount.appAuth?.cookie || ''}
+                          onChange={(e) => updateAppAuth('cookie', e.target.value)}
+                          placeholder="留空保持原值"
+                          style={{
+                            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                            fontSize: 12,
+                            minHeight: 88
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 每个接口 4 字段 */}
+                    <div className="field">
+                      <label className="field-label" style={{ fontSize: 'var(--fs-13)' }}>每个接口</label>
                       {[
                         { key: 'reply', label: 'App 回复帖子' },
                         { key: 'follow', label: 'App 关注/取关' },
@@ -468,7 +544,7 @@ function ConfigPage() {
                                 style={{ fontFamily: 'ui-monospace, SFMono-Regular, monospace', fontSize: 12 }}
                               />
                             </div>
-                            <div className="field" style={{ marginBottom: 10 }}>
+                            <div className="field" style={{ marginBottom: 0 }}>
                               <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>hupu-encrypt-salt</label>
                               <textarea
                                 className="textarea"
@@ -478,33 +554,6 @@ function ConfigPage() {
                                   fontFamily: 'ui-monospace, SFMono-Regular, monospace',
                                   fontSize: 12,
                                   minHeight: 60
-                                }}
-                              />
-                            </div>
-                            <div className="field" style={{ marginBottom: 10 }}>
-                              <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>x-hupu-token</label>
-                              <textarea
-                                className="textarea"
-                                value={v.xHupuToken || ''}
-                                onChange={(e) => updateAppSession(s.key, 'xHupuToken', e.target.value)}
-                                style={{
-                                  fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                                  fontSize: 12,
-                                  minHeight: 60
-                                }}
-                              />
-                            </div>
-                            <div className="field" style={{ marginBottom: 0 }}>
-                              <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>cookie</label>
-                              <textarea
-                                className="textarea"
-                                value={v.cookie || ''}
-                                onChange={(e) => updateAppSession(s.key, 'cookie', e.target.value)}
-                                placeholder="留空保持原值"
-                                style={{
-                                  fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                                  fontSize: 12,
-                                  minHeight: 88
                                 }}
                               />
                             </div>

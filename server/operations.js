@@ -42,22 +42,27 @@ function stripHtml(html) {
 
 /**
  * 把 account.appSessions[key] 转成 axios headers
- * session 包含 host/userAgent/hupuNewSign/hupuEncryptSalt/xHupuToken/cookie 6 个字段
  *
- * 优先从 p._account.appSessions 读（per-account 配置，跟账号绑定）
- * fallback 到 _appSessions（顶层，scheduler 任务的兼容路径）
+ * 字段分为两层：
+ * - 账号共享（account.appAuth）：userAgent / xHupuToken / cookie / hupuNewSign
+ *   这几个字段同一账号下基本不变，只在 action 应配置一次
+ * - session 专有（account.appSessions[key]）：host / hupuEncryptSalt / hupuNewSign（覆盖）
+ *   host 由 endpoint 决定，hupuEncryptSalt / hupuNewSign 是 per-request 变
+ *
+ * 读取顺序：session 字段 → 账号共享字段（fallback）
  */
 function appSessionHeaders(p, key) {
-  const sessions = (p && p._account && p._account.appSessions) || (p && p._appSessions) || {}
-  const s = sessions[key] || {}
+  const account = (p && p._account) || {}
+  const common = account.appAuth || {}
+  const s = ((account.appSessions || {})[key]) || (p && p._appSessions && p._appSessions[key]) || {}
   return {
-    host: s.host || '',
-    'user-agent': s.userAgent || '',
-    'hupu-new-sign': s.hupuNewSign || '',
+    host: s.host || common.host || '',
+    'user-agent': s.userAgent || common.userAgent || '',
+    'hupu-new-sign': s.hupuNewSign || common.hupuNewSign || '',
     'hupu-encrypt-salt': s.hupuEncryptSalt || '',
     'hupu-key-version': '1',
-    'x-hupu-token': s.xHupuToken || '',
-    cookie: s.cookie || ''
+    'x-hupu-token': s.xHupuToken || common.xHupuToken || '',
+    cookie: s.cookie || common.cookie || ''
   }
 }
 
