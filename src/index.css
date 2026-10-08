@@ -658,6 +658,10 @@ select {
   border-radius: var(--r-md);
   transition: var(--t);
 }
+.account-editing {
+  /* 编辑态：纵向表单字段从顶部开始堆叠，避免 actions 漂浮中间 */
+  align-items: flex-start;
+}
 .account + .account {
   margin-top: 8px;
 }

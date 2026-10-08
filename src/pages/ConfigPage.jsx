@@ -317,7 +317,10 @@ function ConfigPage() {
           {cookies.length === 0 && <EmptyState title="还没有账号" hint="粘贴 cookie 添加" />}
 
           {cookies.map((a) => (
-            <div key={a.id} className="account">
+            <div
+              key={a.id}
+              className={`account ${editingAccount?.id === a.id ? 'account-editing' : ''}`}
+            >
               <div
                 className="avatar-lg"
                 style={{
@@ -345,45 +348,54 @@ function ConfigPage() {
               </div>
               <div className="account-body">
                 {editingAccount?.id === a.id ? (
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <input
-                      className="input"
-                      value={editingAccount.name}
-                      onChange={(e) =>
-                        setEditingAccount({ ...editingAccount, name: e.target.value })
-                      }
-                      placeholder="昵称"
-                      style={{ width: 140 }}
-                    />
-                    <input
-                      className="input"
-                      value={editingAccount.euid}
-                      onChange={(e) =>
-                        setEditingAccount({ ...editingAccount, euid: e.target.value })
-                      }
-                      placeholder="euid"
-                      style={{ width: 160 }}
-                    />
-                    <input
-                      className="input"
-                      type="password"
-                      value={editingAccount.cookie}
-                      onChange={(e) =>
-                        setEditingAccount({ ...editingAccount, cookie: e.target.value })
-                      }
-                      placeholder="新 cookie（留空保持原值）"
-                      style={{
-                        width: 360,
-                        fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                        fontSize: 12
-                      }}
-                    />
-                    <Button size="sm" variant="primary" onClick={updateCookie}>
-                      保存
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditingAccount(null)}>
-                      取消
-                    </Button>
+                  <div className="field-group">
+                    <div className="field">
+                      <label className="field-label">昵称</label>
+                      <input
+                        className="input"
+                        value={editingAccount.name}
+                        onChange={(e) =>
+                          setEditingAccount({ ...editingAccount, name: e.target.value })
+                        }
+                        placeholder="昵称"
+                      />
+                    </div>
+                    <div className="field">
+                      <label className="field-label">euid</label>
+                      <input
+                        className="input"
+                        value={editingAccount.euid}
+                        onChange={(e) =>
+                          setEditingAccount({ ...editingAccount, euid: e.target.value })
+                        }
+                        placeholder="euid（如 21291079）"
+                      />
+                    </div>
+                    <div className="field" style={{ marginBottom: 12 }}>
+                      <label className="field-label">新 cookie</label>
+                      <input
+                        className="input"
+                        type="password"
+                        value={editingAccount.cookie}
+                        onChange={(e) =>
+                          setEditingAccount({ ...editingAccount, cookie: e.target.value })
+                        }
+                        placeholder="留空保持原值"
+                        style={{
+                          fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                          fontSize: 12
+                        }}
+                      />
+                      <span className="field-hint">仅修改时粘贴新的；不填保留原 cookie</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Button size="sm" variant="primary" onClick={updateCookie}>
+                        保存
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditingAccount(null)}>
+                        取消
+                      </Button>
+                    </div>
                   </div>
                 ) : (
                   <>
