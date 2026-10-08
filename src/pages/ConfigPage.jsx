@@ -9,6 +9,7 @@ import { Download, Trash } from '../components/icons'
 const TABS = [
   { key: 'accounts', label: '账号' },
   { key: 'monitor', label: '监控账号' },
+  { key: 'app', label: 'App 认证' },
   { key: 'ai', label: 'AI' },
   { key: 'schedule', label: '调度' }
 ]
@@ -459,6 +460,9 @@ function ConfigPage() {
           )}
         </div>
       )}
+
+      {/* App 认证 tab */}
+      {tab === 'app' && <AppSessionsTab />}
 
       {/* AI tab */}
       {tab === 'ai' && <AITab />}
@@ -1138,6 +1142,190 @@ function TaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
           </span>
         </label>
       </div>
+    </div>
+  )
+}
+
+/* ===========================================================
+   App 认证 Tab 子组件
+   ===========================================================
+   管理 3 个 app session header（notifyShare / reply / follow）的 7 个值
+   - 每个 session 一个 card，纵向表单（label / host / userAgent / hupuNewSign / hupuEncryptSalt / xHupuToken / cookie）
+   - 7 字段白名单保存（避免外部字段被写入 config）
+   - 长文本（cookie / salt）用 textarea + 等宽字体
+*/
+function AppSessionsTab() {
+  const [sessions, setSessions] = useState({})
+  const [editing, setEditing] = useState(null) // { key, draft: {...} }
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const r = await axios.get('/api/app-sessions')
+      setSessions(r.data || {})
+    } catch (e) {
+      toast.error('加载失败: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { load() }, [])
+
+  const startEdit = (key, s) =>
+    setEditing({ key, draft: { ...s } })
+
+  const cancelEdit = () => setEditing(null)
+
+  const save = async () => {
+    if (!editing) return
+    setSaving(true)
+    try {
+      const r = await axios.put(`/api/app-sessions/${editing.key}`, editing.draft)
+      setSessions({ ...sessions, [editing.key]: r.data.session })
+      setEditing(null)
+      toast.success('已保存')
+    } catch (e) {
+      toast.error('保存失败: ' + e.response?.data?.error || e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const updateDraft = (field, value) =>
+    setEditing({ ...editing, draft: { ...editing.draft, [field]: value } })
+
+  if (loading) return <div className="hint">加载中…</div>
+
+  const keys = Object.keys(sessions)
+  if (keys.length === 0) {
+    return <EmptyState title="还没有 App session 配置" hint="抓包后填进 config.json 的 appSessions 字段" />
+  }
+
+  // 字段顺序（label 在最上，长文本字段在底部）
+  const FIELD_ORDER = [
+    { key: 'label', label: '昵称（仅标签）', isTextarea: false, secret: false },
+    { key: 'host', label: 'host', isTextarea: false, secret: false },
+    { key: 'userAgent', label: 'user-agent', isTextarea: false, secret: false },
+    { key: 'hupuNewSign', label: 'hupu-new-sign', isTextarea: false, secret: true },
+    { key: 'hupuEncryptSalt', label: 'hupu-encrypt-salt', isTextarea: true, secret: true },
+    { key: 'xHupuToken', label: 'x-hupu-token', isTextarea: true, secret: true },
+    { key: 'cookie', label: 'cookie', isTextarea: true, secret: true }
+  ]
+
+  return (
+    <div>
+      <div className="section-head" style={{ marginBottom: 8 }}>
+        <h2 className="section-title">App 端 mobileapi session 认证</h2>
+        <span className="section-sub">
+          抓包获取这些字段（见 抓包说明.md）；session 过期时只需在这里改值，不用改代码
+        </span>
+      </div>
+
+      {keys.map((key) => {
+        const s = sessions[key] || {}
+        const isEditing = editing?.key === key
+        return (
+          <div
+            key={key}
+            className={`account ${isEditing ? 'account-editing' : ''}`}
+            style={{ flexDirection: 'column', alignItems: 'stretch', marginBottom: 12 }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <span
+                  className="badge"
+                  style={{
+                    background: 'var(--accent-bg)',
+                    color: 'var(--accent)',
+                    borderColor: 'transparent',
+                    fontFamily: 'ui-monospace, SFMono-Regular, monospace'
+                  }}
+                >
+                  {key}
+                </span>
+                <span style={{ fontSize: 'var(--fs-14)', fontWeight: 500, color: 'var(--text)' }}>
+                  {s.label || '(未编辑)'}
+                </span>
+              </div>
+
+              {isEditing ? (
+                <div>
+                  {FIELD_ORDER.map((f) => (
+                    <div key={f.key} className="field">
+                      <label className="field-label">{f.label}</label>
+                      {f.isTextarea ? (
+                        <textarea
+                          className="textarea"
+                          value={editing.draft[f.key] || ''}
+                          onChange={(e) => updateDraft(f.key, e.target.value)}
+                          style={{
+                            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                            fontSize: 12,
+                            minHeight: f.key === 'cookie' ? 88 : 60
+                          }}
+                        />
+                      ) : (
+                        <input
+                          className="input"
+                          value={editing.draft[f.key] || ''}
+                          onChange={(e) => updateDraft(f.key, e.target.value)}
+                          style={
+                            f.secret
+                              ? { fontFamily: 'ui-monospace, SFMono-Regular, monospace', fontSize: 12 }
+                              : {}
+                          }
+                        />
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button variant="primary" onClick={save} disabled={saving}>
+                      {saving ? '保存中…' : '保存'}
+                    </Button>
+                    <Button variant="ghost" onClick={cancelEdit}>
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="account-meta" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                  {FIELD_ORDER.filter((f) => f.key !== 'label').map((f) => {
+                    const v = s[f.key] || ''
+                    const display = v ? (v.length > 60 ? v.slice(0, 30) + '…' + v.slice(-15) : v) : '(未填)'
+                    return (
+                      <div key={f.key} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                        <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-12)', minWidth: 130 }}>
+                          {f.label}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                            fontSize: 12,
+                            color: 'var(--text)',
+                            wordBreak: 'break-all'
+                          }}
+                        >
+                          {display}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {!isEditing && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <Button size="sm" variant="ghost" onClick={() => startEdit(key, s)}>
+                  编辑
+                </Button>
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
