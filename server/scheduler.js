@@ -985,9 +985,10 @@ async function dailyPostContentTask(ctx) {
  * 依赖：notifyShare action + config.appAuth（hupu-new-sign session header）
  */
 async function dailyShareTask(ctx) {
-  const { log } = ctx
+  const { log, accounts } = ctx
   const config = await readConfig()
-  const appAuth = config.appAuth || {}
+  // 用主账号的 appSessions（per-account 配置，跟账号绑定）
+  const primary = accounts.find((a) => a.primary) || accounts[0] || {}
 
   const taskCfg = (config.taskSchedules && config.taskSchedules['daily-share-x8']) || {}
   const count = Math.max(1, Math.min(20, Number(taskCfg.shareCount) || 8))
@@ -1022,7 +1023,7 @@ async function dailyShareTask(ctx) {
           bizId: t.tid,
           shareTitle: t.title || `分享帖子 ${t.tid}`,
           shareURL: `https://bbs.hupu.com/${t.tid}.html`,
-          _appAuth: appAuth
+          _account: primary
         },
         ''
       )

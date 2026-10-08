@@ -41,11 +41,15 @@ function stripHtml(html) {
 }
 
 /**
- * 把 config.appSessions[key] 转成 axios headers
+ * 把 account.appSessions[key] 转成 axios headers
  * session 包含 host/userAgent/hupuNewSign/hupuEncryptSalt/xHupuToken/cookie 6 个字段
+ *
+ * 优先从 p._account.appSessions 读（per-account 配置，跟账号绑定）
+ * fallback 到 _appSessions（顶层，scheduler 任务的兼容路径）
  */
-function appSessionHeaders(sessions, key) {
-  const s = (sessions || {})[key] || {}
+function appSessionHeaders(p, key) {
+  const sessions = (p && p._account && p._account.appSessions) || (p && p._appSessions) || {}
+  const s = sessions[key] || {}
   return {
     host: s.host || '',
     'user-agent': s.userAgent || '',
@@ -245,7 +249,7 @@ export const ACTIONS = {
         sign: ''
       }
     },
-    headers: (p) => appSessionHeaders(p._appSessions, 'share'),
+    headers: (p) => appSessionHeaders(p, 'share'),
     isSuccess: (data) => {
       if (data?.returnCode === '00000000' || data?.code === 200) return { ok: true }
       return { ok: false, reason: data?.msg || `code=${data?.code}` }
@@ -267,7 +271,7 @@ export const ACTIONS = {
     url: () => 'https://bbs.mobileapi.hupu.com/1/8.2.63/bbsreplyapi/reply/v1/app/create',
     body: () => APP_REPLY_BODY,
     headers: (p) => ({
-      ...appSessionHeaders(p._appSessions, 'reply'),
+      ...appSessionHeaders(p, 'reply'),
       'content-type': 'application/json;charset=UTF-8'
     }),
     isSuccess: (data) => {
@@ -306,7 +310,7 @@ export const ACTIONS = {
       return map[puid]
     },
     headers: (p) => ({
-      ...appSessionHeaders(p._appSessions, 'follow'),
+      ...appSessionHeaders(p, 'follow'),
       'content-type': 'application/x-www-form-urlencoded'
     }),
     isSuccess: (data) => {
@@ -332,7 +336,7 @@ export const ACTIONS = {
       return map[puid]
     },
     headers: (p) => ({
-      ...appSessionHeaders(p._appSessions, 'follow'),
+      ...appSessionHeaders(p, 'follow'),
       'content-type': 'application/x-www-form-urlencoded'
     }),
     isSuccess: (data) => {

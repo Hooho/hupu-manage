@@ -332,12 +332,15 @@ app.post('/api/action/:name', async (req, res) => {
   try {
     const cookie = await getPrimaryCookie()
     if (!cookie) return res.status(400).json({ error: '未配置主账号 Cookie' })
-    // App 端 mobileapi 接口需要从 config.appSessions 读 session-level 固定 header
-    // 按 action key 取（reply/follow/share），抓包一次后填进 config.json
+    // App 端 mobileapi 接口需要从主账号的 appSessions 读 session-level 固定 header
+    // 按 action key 取（reply/follow/share），抓包一次后填进账号的 appSessions 字段
     const config = await readConfig()
+    const accounts = config.accounts || []
+    const primary = accounts.find((a) => a.primary) || accounts[0] || {}
     const params = {
       ...req.body,
-      _appSessions: config.appSessions || {},
+      _account: primary,
+      _appSessions: primary.appSessions || {}, // 兼容老路径（顶层 appSessions）
       _appFollowConfig: config.appFollowConfig || {}
     }
     const { data, idempotent, reason } = await executeAction(name, params, cookie)
@@ -733,7 +736,13 @@ app.post('/api/accounts', async (req, res) => {
 })
 
 app.patch('/api/accounts/:id', async (req, res) => {
-  const updated = await updateAccount(req.params.id, req.body || {})
+  // 白名单字段，避免外部塞任意字段污染 account 对象
+  const ALLOWED = ['name', 'euid', 'cookie', 'appSessions']
+  const patch = {}
+  for (const k of ALLOWED) {
+    if (req.body && req.body[k] !== undefined) patch[k] = req.body[k]
+  }
+  const updated = await updateAccount(req.params.id, patch)
   if (!updated) return res.status(404).json({ error: '账号不存在' })
   res.json({ success: true, account: { ...updated, cookie: '***' } })
 })
