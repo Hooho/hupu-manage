@@ -941,6 +941,14 @@ function ScheduleTab() {
                     onSave={(patch) => save(t.id, patch)}
                   />
                 )}
+                {t.id === 'daily-share-x8' && (
+                  <ShareTaskCfgRow
+                    accounts={accounts}
+                    taskCfg={t.taskCfg || {}}
+                    primaryId={(accounts.find((a) => a.primary) || {}).id}
+                    onSave={(patch) => save(t.id, patch)}
+                  />
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1297,6 +1305,143 @@ function TaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
           <span style={{ color: 'var(--text-3)', fontSize: 12 }}>
             4860=NBA · 6=步行街 · 其他自己查
           </span>
+        </label>
+      </div>
+    </div>
+  )
+}
+
+/* ===========================================================
+   每日分享任务配置（账号多选 + 分享条数 + 间隔）
+   =========================================================== */
+function ShareTaskCfgRow({ accounts, taskCfg, primaryId, onSave }) {
+  const [selectedIds, setSelectedIds] = useState(
+    Array.isArray(taskCfg.accountIds) && taskCfg.accountIds.length > 0
+      ? taskCfg.accountIds
+      : primaryId
+      ? [primaryId]
+      : []
+  )
+  const [shareCount, setShareCount] = useState(Number(taskCfg.shareCount) || 8)
+  const [intervalMs, setIntervalMs] = useState(Number(taskCfg.intervalMs) || 30_000)
+
+  useEffect(() => {
+    if (Array.isArray(taskCfg.accountIds)) setSelectedIds(taskCfg.accountIds)
+    if (typeof taskCfg.shareCount === 'number') setShareCount(taskCfg.shareCount)
+    if (typeof taskCfg.intervalMs === 'number') setIntervalMs(taskCfg.intervalMs)
+  }, [taskCfg])
+
+  const toggleAccount = (id) => {
+    setSelectedIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+      onSave({ accountIds: next })
+      return next
+    })
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: '10px 12px',
+        background: 'var(--bg-2)',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-13)'
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap'
+        }}
+      >
+        <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>账号</span>
+        {accounts.length === 0 ? (
+          <span style={{ color: 'var(--text-3)' }}>（先去「账号」tab 添加）</span>
+        ) : (
+          accounts.map((a) => {
+            const hasShare = a.appSessions && a.appSessions.share
+            const disabled = !hasShare
+            return (
+              <label
+                key={a.id}
+                title={disabled ? '该账号未配置 appSessions.share，跳过' : ''}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  color: disabled ? 'var(--text-3)' : 'var(--text)'
+                }}
+              >
+                <input
+                  type="checkbox"
+                  disabled={disabled}
+                  checked={!disabled && selectedIds.includes(a.id)}
+                  onChange={() => !disabled && toggleAccount(a.id)}
+                />
+                <span
+                  style={{
+                    fontWeight: a.id === primaryId ? 600 : 400,
+                    color: disabled ? 'var(--text-3)' : a.primary ? 'var(--accent)' : 'var(--text-2)'
+                  }}
+                >
+                  {a.name || `账号 ${a.id}`}
+                  {a.primary && !disabled && (
+                    <span style={{ fontSize: 11, marginLeft: 4 }}>⭐</span>
+                  )}
+                  {disabled && (
+                    <span style={{ fontSize: 11, marginLeft: 4, color: 'var(--text-3)' }}>未配 share</span>
+                  )}
+                </span>
+              </label>
+            )
+          })
+        )}
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          gap: 12,
+          marginTop: 10,
+          alignItems: 'center',
+          flexWrap: 'wrap'
+        }}
+      >
+        <label style={{ color: 'var(--text-2)' }}>
+          每账号分享条数
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={20}
+            value={shareCount}
+            onChange={(e) => {
+              const v = Math.max(1, Math.min(20, Number(e.target.value) || 8))
+              setShareCount(v)
+              onSave({ shareCount: v })
+            }}
+            style={{ width: 70, marginLeft: 6 }}
+          />
+        </label>
+        <label style={{ color: 'var(--text-2)' }}>
+          间隔（毫秒）
+          <input
+            className="input"
+            type="number"
+            min={0}
+            max={10 * 60_000}
+            step={1000}
+            value={intervalMs}
+            onChange={(e) => {
+              const v = Math.max(0, Math.min(10 * 60_000, Number(e.target.value) || 30_000))
+              setIntervalMs(v)
+              onSave({ intervalMs: v })
+            }}
+            style={{ width: 100, marginLeft: 6 }}
+          />
         </label>
       </div>
     </div>

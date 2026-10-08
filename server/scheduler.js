@@ -987,17 +987,22 @@ async function dailyPostContentTask(ctx) {
 async function dailyShareTask(ctx) {
   const { log, accounts } = ctx
   const config = await readConfig()
-  // 用主账号的 appSessions（per-account 配置，跟账号绑定）
-  const primary = accounts.find((a) => a.primary) || accounts[0] || {}
 
   const taskCfg = (config.taskSchedules && config.taskSchedules['daily-share-x8']) || {}
   const count = Math.max(1, Math.min(20, Number(taskCfg.shareCount) || 8))
   const intervalMs = Math.max(0, Math.min(10 * 60_000, Number(taskCfg.intervalMs) || 30_000))
   const url = taskCfg.url || 'https://bbs.hupu.com/'
 
-  log(`▶ 开始每日分享（${count} 条不同帖子，间隔 ${intervalMs / 1000}s，源=${url}）`, 'info')
+  // 选账号：未配 accountIds 默认只跑主账号
+  const primary = accounts.find((a) => a.primary) || accounts[0] || {}
+  const selectedIds =
+    Array.isArray(taskCfg.accountIds) && taskCfg.accountIds.length > 0
+      ? taskCfg.accountIds
+      : primary.id
+      ? [primary.id]
+      : []
 
-  // 1. 抓 N 条不同帖子
+  // 抓 N 条不同帖子（每个账号共享一份抓取结果，不重复抓）
   let items = []
   try {
     const listRes = await executeScraper('threads', { url })
@@ -1010,38 +1015,58 @@ async function dailyShareTask(ctx) {
     log('✗ 抓列表为空，跳过', 'warn')
     return { skipped: true, reason: 'empty threads' }
   }
-  log(`  → 抓到 ${items.length} 条帖子作为分享源`, 'info')
 
-  // 2. notifyShare 每条帖子一次
+  log(
+    `▶ 每日分享：${selectedIds.length} 个账号 × ${items.length} 条帖子，间隔 ${intervalMs / 1000}s，源=${url}`,
+    'info'
+  )
+
+  // 多账号循环：每个账号 × N 条帖子
   const results = []
-  for (let i = 0; i < items.length; i++) {
-    const t = items[i]
-    try {
-      const r = await executeAction(
-        'notifyShare',
-        {
-          bizId: t.tid,
-          shareTitle: t.title || `分享帖子 ${t.tid}`,
-          shareURL: `https://bbs.hupu.com/${t.tid}.html`,
-          _account: primary
-        },
-        ''
-      )
-      const ok = r.status === 200 || r.status === 'success'
-      results.push({ tid: t.tid, title: t.title, ok, msg: r.data?.msg || r.reason })
-      log(
-        `  [${i + 1}/${items.length}] ${ok ? '✓' : '✗'} tid=${t.tid} ${(t.title || '').slice(0, 30)}`,
-        ok ? 'info' : 'warn'
-      )
-    } catch (e) {
-      results.push({ tid: t.tid, title: t.title, ok: false, msg: e.message })
-      log(`  [${i + 1}/${items.length}] ✗ tid=${t.tid} 失败: ${e.message}`, 'err')
+  for (const accId of selectedIds) {
+    const account = accounts.find((a) => a.id === accId)
+    if (!account) {
+      log(`  跳过账号 ${accId}（不存在）`, 'warn')
+      continue
     }
-    if (i < items.length - 1) await sleep(intervalMs)
+    if (!account.appSessions || !account.appSessions.share) {
+      log(
+        `  跳过账号 ${account.name || accId}（未配置 appSessions.share，去账号 Tab 配）`,
+        'warn'
+      )
+      continue
+    }
+    log(`  ▶ ${account.name || accId}（id=${accId}）`, 'info')
+
+    for (let i = 0; i < items.length; i++) {
+      const t = items[i]
+      try {
+        const r = await executeAction(
+          'notifyShare',
+          {
+            bizId: t.tid,
+            shareTitle: t.title || `分享帖子 ${t.tid}`,
+            shareURL: `https://bbs.hupu.com/${t.tid}.html`,
+            _account: account
+          },
+          ''
+        )
+        const ok = r.status === 200 || r.status === 'success'
+        results.push({ accId, tid: t.tid, title: t.title, ok, msg: r.data?.msg || r.reason })
+        log(
+          `    [${i + 1}/${items.length}] ${ok ? '✓' : '✗'} tid=${t.tid} ${(t.title || '').slice(0, 30)}`,
+          ok ? 'info' : 'warn'
+        )
+      } catch (e) {
+        results.push({ accId, tid: t.tid, title: t.title, ok: false, msg: e.message })
+        log(`    [${i + 1}/${items.length}] ✗ tid=${t.tid} 失败: ${e.message}`, 'err')
+      }
+      if (i < items.length - 1) await sleep(intervalMs)
+    }
   }
 
   const okCount = results.filter((r) => r.ok).length
-  log(`完成分享: ${okCount}/${results.length} 成功`, okCount === results.length ? 'info' : 'warn')
+  log(`总分享: ${okCount}/${results.length} 成功`, okCount === results.length ? 'info' : 'warn')
   return { total: results.length, ok: okCount, results }
 }
 
