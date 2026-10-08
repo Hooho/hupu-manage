@@ -28,6 +28,9 @@ function ConfigPage() {
   const [newName, setNewName] = useState('')
   const [newEuidInput, setNewEuidInput] = useState('')
   const [editingAccount, setEditingAccount] = useState(null) // { id, name, euid, cookie }
+  // capture 粘贴区
+  const [captureInput, setCaptureInput] = useState('')
+  const [captureParseMsg, setCaptureParseMsg] = useState('')
   const startEdit = (a) =>
     setEditingAccount({
       id: a.id,
@@ -37,6 +40,188 @@ function ConfigPage() {
       appAuth: a.appAuth || {},
       appSessions: a.appSessions || { reply: {}, follow: {}, share: {} }
     })
+
+  /* capture 解析：支持 3 种格式
+   *   - whistle JSON（whistle 抓包导出文件，结构 {req: {url, headers, body, base64}}）
+   *   - cURL（Chrome DevTools "Copy as cURL"，含 -X / -H / -d）
+   *   - 原始 HTTP（首行 + headers + 空行 + body）
+   * 返回 { url, method, headers: {key: value}, body: string }
+   */
+  function parseCapture(text) {
+    const trimmed = text.trim()
+    if (!trimmed) return null
+
+    // 1. whistle JSON
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        const entry = Array.isArray(parsed) ? parsed[0] : parsed
+        const req = entry.req || entry
+        const headers = { ...(req.headers || {}) }
+        // header name 大小写归一（axios 会小写）
+        const lower = {}
+        for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v
+        let body = req.body || ''
+        // whistle 有时 body 为空但有 base64
+        if (!body && req.base64) {
+          try {
+            body = Buffer.from(req.base64, 'base64').toString('utf8')
+          } catch {}
+        }
+        return {
+          url: req.url || '',
+          method: req.method || 'POST',
+          headers: lower,
+          body
+        }
+      } catch (e) {
+        // 不是 JSON，继续试其他格式
+      }
+    }
+
+    // 2. cURL
+    if (trimmed.startsWith('curl ') || trimmed.startsWith("curl'") || /\bcurl\s+/.test(trimmed)) {
+      // 提取 url（'url' 或 "url"）
+      const urlMatch = trimmed.match(/curl\s+(?:'([^']+)'|"([^"]+)")/)
+      if (!urlMatch) return null
+      const url = urlMatch[1] || urlMatch[2]
+      const methodMatch = trimmed.match(/-X\s+([A-Z]+)/)
+      const method = methodMatch ? methodMatch[1] : 'POST'
+      const headers = {}
+      const hRe = /-H\s+(?:'([^']+)'|"([^"]+)")/g
+      let m
+      while ((m = hRe.exec(trimmed)) !== null) {
+        const kv = m[1] || m[2]
+        const idx = kv.indexOf(':')
+        if (idx > 0) headers[kv.slice(0, idx).trim().toLowerCase()] = kv.slice(idx + 1).trim()
+      }
+      // body：-d '...' 或 --data '...'
+      let body = ''
+      const dRe = /(?:--data|-d)\s+(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|([^\s]+))/g
+      const dMatch = dRe.exec(trimmed)
+      if (dMatch) body = dMatch[1] || dMatch[2] || dMatch[3] || ''
+      return { url, method, headers, body }
+    }
+
+    // 3. 原始 HTTP（首行是 request line）
+    const firstLine = trimmed.split('\n')[0]
+    if (/^(GET|POST|PUT|DELETE|PATCH)\s+\S+\s+HTTP\//.test(firstLine)) {
+      const parts = firstLine.trim().split(/\s+/)
+      const method = parts[0]
+      const path = parts[1]
+      const lines = trimmed.split('\n')
+      const headers = {}
+      let body = ''
+      let inBody = false
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i]
+        if (inBody) {
+          body += (body ? '\n' : '') + line
+          continue
+        }
+        if (line.trim() === '') {
+          inBody = true
+          continue
+        }
+        const idx = line.indexOf(':')
+        if (idx > 0) headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim()
+      }
+      // 拼 URL：host header + path
+      const host = headers.host || ''
+      const scheme = /^https/i.test(host) || /\bx\.com$/i.test(host) ? 'https' : 'https'
+      return {
+        url: host ? `${scheme}://${host}${path.startsWith('/') ? '' : '/'}${path}` : path,
+        method,
+        headers,
+        body
+      }
+    }
+
+    return null
+  }
+
+  // 根据 URL 自动判断属于哪个 session（reply/follow/share）
+  function sessionKeyFromUrl(url) {
+    if (!url) return null
+    if (url.includes('/bbsreplyapi/reply/v1/app/create')) return 'reply'
+    if (url.includes('/bplapi/user/v1/addFollow')) return 'follow'  // addFollow 和 delFollow 都用同一套 follow session
+    if (url.includes('/bplapi/user/v1/delFollow')) return 'follow'
+    if (url.includes('/bbsintapi/share/v1/notifyShareInfo')) return 'share'
+    return null
+  }
+
+  // 解析后填字段：1. 填账号共享的 token/cookie 2. 自动检测 session
+  const parseCaptureIntoFields = () => {
+    const parsed = parseCapture(captureInput)
+    if (!parsed) {
+      setCaptureParseMsg('✗ 解析失败，不支持的格式（whistle JSON / cURL / 原始 HTTP）')
+      return
+    }
+    const { headers, body } = parsed
+    const updates = { appAuth: {}, appSessions: { ...(editingAccount.appSessions || {}) } }
+
+    // 账号共享字段
+    if (headers['x-hupu-token']) updates.appAuth.xHupuToken = headers['x-hupu-token']
+    if (headers.cookie) updates.appAuth.cookie = headers.cookie
+
+    // 检测 session key（reply/follow/share）
+    const sk = sessionKeyFromUrl(parsed.url)
+    if (sk) {
+      updates.appSessions[sk] = {
+        ...(updates.appSessions[sk] || {}),
+        hupuNewSign: headers['hupu-new-sign'] || '',
+        hupuEncryptSalt: headers['hupu-encrypt-salt'] || ''
+      }
+      if (body && (sk === 'follow' || sk === 'reply')) {
+        // follow: 整个 body 存起来；reply: body 是 JSON 字符串也存起来
+        if (sk === 'follow') {
+          updates.appSessions[sk].body = body
+        }
+      }
+    }
+
+    setEditingAccount({
+      ...editingAccount,
+      appAuth: { ...(editingAccount.appAuth || {}), ...updates.appAuth },
+      appSessions: updates.appSessions
+    })
+
+    const filled = []
+    if (updates.appAuth.xHupuToken) filled.push('x-hupu-token')
+    if (updates.appAuth.cookie) filled.push('cookie')
+    if (sk && updates.appSessions[sk]?.hupuNewSign) filled.push(`${sk}.hupu-new-sign`)
+    if (sk && updates.appSessions[sk]?.hupuEncryptSalt) filled.push(`${sk}.hupu-encrypt-salt`)
+    if (sk && updates.appSessions[sk]?.body) filled.push(`${sk}.body`)
+
+    setCaptureParseMsg(
+      `✓ 已填字段：${filled.join(', ')}${sk ? `（检测到 ${sk} session）` : '（未识别 URL，仅填共享字段）'}`
+    )
+  }
+
+  // 把 capture 整体填进对应 session（包括 body 整段）
+  const parseCaptureIntoSession = () => {
+    const parsed = parseCapture(captureInput)
+    if (!parsed) {
+      setCaptureParseMsg('✗ 解析失败')
+      return
+    }
+    const sk = sessionKeyFromUrl(parsed.url)
+    if (!sk) {
+      setCaptureParseMsg('✗ URL 不在 reply/follow/share 范围内')
+      return
+    }
+    const updates = { ...(editingAccount.appSessions || {}) }
+    updates[sk] = {
+      ...(updates[sk] || {}),
+      hupuNewSign: parsed.headers['hupu-new-sign'] || '',
+      hupuEncryptSalt: parsed.headers['hupu-encrypt-salt'] || ''
+    }
+    if (sk === 'follow' && parsed.body) {
+      updates[sk].body = parsed.body
+    }
+    setEditingAccount({ ...editingAccount, appSessions: updates })
+    setCaptureParseMsg(`✓ 已填 ${sk} session（hupu-new-sign + hupu-encrypt-salt${sk === 'follow' ? ' + body' : ''}）`)
+  }
 
   useEffect(() => {
     load()
@@ -427,6 +612,68 @@ function ConfigPage() {
                         hupu-new-sign / hupu-encrypt-salt 每个接口单独配（per-request 变，session 过期重抓）。
                         详见抓包说明.md
                       </span>
+                    </div>
+
+                    {/* capture 粘贴区：自动解析填字段（支持 whistle JSON / cURL / 原始 HTTP） */}
+                    <div
+                      style={{
+                        border: '1px dashed var(--accent)',
+                        borderRadius: 'var(--r-sm)',
+                        padding: 12,
+                        marginBottom: 12,
+                        background: 'rgba(231, 56, 40, 0.04)'
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 'var(--fs-12)',
+                          fontWeight: 500,
+                          color: 'var(--accent)',
+                          marginBottom: 6
+                        }}
+                      >
+                        📋 粘贴 capture 一键填字段
+                      </div>
+                      <textarea
+                        className="textarea"
+                        value={captureInput}
+                        onChange={(e) => setCaptureInput(e.target.value)}
+                        placeholder="支持 whistle JSON / cURL / 原始 HTTP 三种格式。粘贴后点下方按钮"
+                        style={{
+                          fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                          fontSize: 11,
+                          minHeight: 80
+                        }}
+                      />
+                      <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                        <Button size="sm" variant="ghost" onClick={parseCaptureIntoFields}>
+                          解析并填入下方字段
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={parseCaptureIntoSession}
+                          disabled={!captureInput.trim()}
+                        >
+                          解析为 session（按 URL 选 reply/follow/share）
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setCaptureInput('')}>
+                          清空
+                        </Button>
+                      </div>
+                      {captureParseMsg && (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            fontSize: 'var(--fs-12)',
+                            color: captureParseMsg.startsWith('✗')
+                              ? 'var(--danger)'
+                              : 'var(--success)'
+                          }}
+                        >
+                          {captureParseMsg}
+                        </div>
+                      )}
                     </div>
 
                     {/* 账号共享 3 字段 */}
