@@ -490,9 +490,9 @@ function ConfigPage() {
                     <div className="field">
                       <label className="field-label" style={{ fontSize: 'var(--fs-13)' }}>每个接口</label>
                       {[
-                        { key: 'reply', label: 'App 回复帖子' },
-                        { key: 'follow', label: 'App 关注/取关' },
-                        { key: 'share', label: 'App 分享上报' }
+                        { key: 'reply' },
+                        { key: 'follow' },
+                        { key: 'share' }
                       ].map((s) => {
                         const v = editingAccount.appSessions?.[s.key] || {}
                         return (
@@ -516,15 +516,6 @@ function ConfigPage() {
                               }}
                             >
                               {s.key}
-                            </div>
-                            <div className="field" style={{ marginBottom: 10 }}>
-                              <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>昵称</label>
-                              <input
-                                className="input"
-                                value={v.label || ''}
-                                onChange={(e) => updateAppSession(s.key, 'label', e.target.value)}
-                                placeholder={`${s.label}（仅标签）`}
-                              />
                             </div>
                             <div className="field" style={{ marginBottom: 10 }}>
                               <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>host</label>
