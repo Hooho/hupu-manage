@@ -290,6 +290,90 @@ export const ACTIONS = {
       if (String(data?.status) === '200' && data?.result?.pid) return { ok: true }
       return { ok: false, reason: data?.msg || `status=${data?.status}` }
     }
+  },
+
+  // ===========================================
+  // App 端关注 / 取关（games.mobileapi.hupu.com / bplapi/user/v1/*）
+  // ===========================================
+  // 关键发现（2026-10）：
+  //   - host 是 games.mobileapi.hupu.com（不是 bbs.mobileapi.hupu.com）
+  //   - content-type: application/x-www-form-urlencoded（不是 JSON）
+  //   - body 的 sign 是真签名（跟 reply 同模式），改 buddyPuid 字段就 403
+  //   - hupu-new-sign / hupu-encrypt-salt 是 per-request 的（不是 session-level），
+  //     每次请求都会换 —— session header 写死不靠谱，要等 long term 时重新抓包
+  //   - header 的 x-hupu-token / cookie / user-agent 跨 addFollow 和 delFollow 一致
+  // 适用场景：刷互关声望；加新 puid 必须重新抓包（sign 绑死 buddyPuid）
+  // capture 时间：2026-10-08（addFollow 14:36 UTC，delFollow 14:36 UTC 同分钟）
+  // config.appFollowConfig.{addFollow,delFollow} 是 {puid: formEncodedBody} 映射
+  appFollow: {
+    label: 'App 关注用户',
+    url: () => 'https://games.mobileapi.hupu.com/1/8.2.63/bplapi/user/v1/addFollow',
+    body: (p) => {
+      const cfg = p._appFollowConfig || {}
+      const map = cfg.addFollow || {}
+      const puid = String(p.buddyPuid || '98884021')
+      if (!map[puid]) {
+        throw new Error(
+          `appFollow 未配置 buddyPuid=${puid} 的 capture body —— 加新 puid 必须重新抓包填进 config.appFollowConfig.addFollow`
+        )
+      }
+      return map[puid]
+    },
+    headers: () => ({
+      host: 'games.mobileapi.hupu.com',
+      'user-agent':
+        'Dalvik/2.1.0 (Linux; U; Android 12; 2304FPN6DC Build/W528JS) kanqiu/8.2.63.09241/12314',
+      'hupu-new-sign': 'c8d18c23643e183cd4492a9320ecb0c4',
+      'hupu-encrypt-salt':
+        'cwiiLyjDUmH0tdPA1mPV+MBbSLHWYVzFeLIQEJubeCPsqffx2zdedU3YREbXROB/vkG4yWoAi5t5PZl7ufpXqB9A+GqJ2IiQRWT9Au4uMZqDPuZKXpJRRU8//KgiNZ23jDQM58b4eMa0hsU2sYAamTdql2nJqrzHYy51ZQAyeUS62kB/CNPihhxKA2cRFB/0m2Ci3mV4Hlzw1Fxr20N6AUqTKqJR34poNlK3GNJaN/hMlf4XW64Gygir17s31HQe4WDhqkprWuh2cVgOeYVNMx636rIr5dmuRDzFg9gl25CVeeVieyaWIT0VEiQi65lCXYtcGakihs9gtwGapud2lg==',
+      'hupu-key-version': '1',
+      'x-hupu-token':
+        '98833334|5q P5aSp55SoQUnnlJ/miJA1MOWtl eskeivneWbnuWkjQ==|04c3|c32d9d20ea717f94ef77f3b850521701|4456ee9e5407089f|aHVwdV9mZWEyYmIzNDk3Y2QxMzlj:51183900:f9a3116a8bdc5bf4ebdc705b1aff344da9f409eb975468aea7a8df2ba9244222da21406d7f94050f98da93d6ccd89d852a660c892251f4b6ff26b802c96084fe',
+      cookie:
+        'u=98833334%7C5q%2BP5aSp55SoQUnnlJ%2FmiJA1MOWtl%2BeskeivneWbnuWkjQ%3D%3D%7C04c3%7Cc32d9d20ea717f94ef77f3b850521701%7C4456ee9e5407089f%7DaHVwdV9mZWEyYmIzNDk3Y2QxMzlj; domain=.ideepu.com; expires=Sat, 04-Oct-2036 07:59:48 GMT; path=/; httponly; cpck=eyJpZGZhIjoiIiwiY2xpZW50IjoiZjA1ODk5YTJhZWUwMjI4MSIsInByb2plY3RJZCI6MX0%3D; _gamesu=NDg0MjUxOTA%3D%7CMTc5MTM1OTk4OA%3D%3D%7Ceb13fbaf2fc8c4a811cc1886fc782bbe; ua=51183900; pctpct=9nyuvco%2B8DAVdNOMRwHtStaNb81res%2BOtPDAD2EIOlw%3D',
+      'content-type': 'application/x-www-form-urlencoded'
+    }),
+    isSuccess: (data) => {
+      // 关注成功：status=200, result.currentRelationLevel=2（已互关）/1（已关注）
+      // 重复关注：也是 status=200，result.currentRelationLevel 不变（幂等成功）
+      if (Number(data?.status) === 200) return { ok: true }
+      return { ok: false, reason: data?.msg || `status=${data?.status}` }
+    }
+  },
+
+  appUnfollow: {
+    label: 'App 取关用户',
+    url: () => 'https://games.mobileapi.hupu.com/1/8.2.63/bplapi/user/v1/delFollow',
+    body: (p) => {
+      const cfg = p._appFollowConfig || {}
+      const map = cfg.delFollow || {}
+      const puid = String(p.buddyPuid || '98884021')
+      if (!map[puid]) {
+        throw new Error(
+          `appUnfollow 未配置 buddyPuid=${puid} 的 capture body —— 加新 puid 必须重新抓包填进 config.appFollowConfig.delFollow`
+        )
+      }
+      return map[puid]
+    },
+    headers: () => ({
+      host: 'games.mobileapi.hupu.com',
+      'user-agent':
+        'Dalvik/2.1.0 (Linux; U; Android 12; 2304FPN6DC Build/W528JS) kanqiu/8.2.63.09241/12314',
+      'hupu-new-sign': '478dd5500d445d74312b56a8c0334457',
+      'hupu-encrypt-salt':
+        'Ey/sfaJ4Y1eS35fn6uvY9vgpoLsvTi+VT8tXzwmSxPpjmzZPn128VuNpWhZ3eRMpzDrVA7Xofd0TbBrsoH8iCL1UaQk//ImIU9hI+Dm9YV6ifcyCTPX2LblnmLOecxZ4i6PELhc6YAPYq4Pmw0RvV4b5zM2KiA0v2n6fLk+IgXPv0ULkYKNvjKxZwWyRmv/pcf2CpqOu5uyaVOzhzuikZBtx81Kt4VLey4qYcZlxBDVfAihHUPbnJWQ2i0ui7ZKX3+s11isCVIVtQCfS54agW0hT/a9QQUFYIdV+S/zflSMpIoTqO/ZbMJ9USzuYCrAAmXBUTG8d196YMkHUkf3oYg==',
+      'hupu-key-version': '1',
+      'x-hupu-token':
+        '98833334|5q P5aSp55SoQUnnlJ/miJA1MOWtl eskeivneWbnuWkjQ==|04c3|c32d9d20ea717f94ef77f3b850521701|4456ee9e5407089f|aHVwdV9mZWEyYmIzNDk3Y2QxMzlj:51183900:f9a3116a8bdc5bf4ebdc705b1aff344da9f409eb975468aea7a8df2ba9244222da21406d7f94050f98da93d6ccd89d852a660c892251f4b6ff26b802c96084fe',
+      cookie:
+        'u=98833334%7C5q%2BP5aSp55SoQUnnlJ%2FmiJA1MOWtl%2BeskeivneWbnuWkjQ%3D%3D%7C04c3%7Cc32d9d20ea717f94ef77f3b850521701%7C4456ee9e5407089f%7DaHVwdV9mZWEyYmIzNDk3Y2QxMzlj; domain=.ideepu.com; expires=Sat, 04-Oct-2036 07:59:48 GMT; path=/; httponly; cpck=eyJpZGZhIjoiIiwiY2xpZW50IjoiZjA1ODk5YTJhZWUwMjI4MSIsInByb2plY3RJZCI6MX0%3D; _gamesu=NDg0MjUxOTA%3D%7CMTc5MTM1OTk4OA%3D%3D%7Ceb13fbaf2fc8c4a811cc1886fc782bbe; ua=51183900; pctpct=9nyuvco%2B8DAVdNOMRwHtStaNb81res%2BOtPDAD2EIOlw%3D',
+      'content-type': 'application/x-www-form-urlencoded'
+    }),
+    isSuccess: (data) => {
+      // 取关成功：status=200, result.currentRelationLevel=-1（无关系）
+      if (Number(data?.status) === 200) return { ok: true }
+      return { ok: false, reason: data?.msg || `status=${data?.status}` }
+    }
   }
 }
 

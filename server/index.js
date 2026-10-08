@@ -312,7 +312,8 @@ app.post('/api/action/:name', async (req, res) => {
     const config = await readConfig()
     const params = {
       ...req.body,
-      _appAuth: config.appAuth || {}
+      _appAuth: config.appAuth || {},
+      _appFollowConfig: config.appFollowConfig || {}
     }
     const { data, idempotent, reason } = await executeAction(name, params, cookie)
     console.log(`${ACTIONS[name].label} ${idempotent ? '幂等' : '成功'}:`, data, idempotent ? `(reason: ${reason})` : '')
