@@ -44,20 +44,26 @@ function stripHtml(html) {
  * 把 account.appSessions[key] 转成 axios headers
  *
  * 字段分为两层：
- * - 账号共享（account.appAuth）：userAgent / xHupuToken / cookie / hupuNewSign
- *   这几个字段同一账号下基本不变，只在 action 应配置一次
- * - session 专有（account.appSessions[key]）：host / hupuEncryptSalt / hupuNewSign（覆盖）
- *   host 由 endpoint 决定，hupuEncryptSalt / hupuNewSign 是 per-request 变
+ * - 账号共享（account.appAuth）：xHupuToken / cookie
+ *   同一账号下基本不变，账号只需配置一次
+ * - session 专有（account.appSessions[key]）：hupuNewSign / hupuEncryptSalt
+ *   per-request 变，session 过期重抓
+ *
+ * 写死字段（不读 config）：
+ * - host：axios 从 URL 自动提取
+ * - user-agent：固定 Android Dalvik UA
  *
  * 读取顺序：session 字段 → 账号共享字段（fallback）
  */
+const APP_USER_AGENT =
+  'Dalvik/2.1.0 (Linux; U; Android 12; 2304FPN6DC Build/W528JS) kanqiu/8.2.63.09241/12314'
+
 function appSessionHeaders(p, key) {
   const account = (p && p._account) || {}
   const common = account.appAuth || {}
   const s = ((account.appSessions || {})[key]) || (p && p._appSessions && p._appSessions[key]) || {}
   return {
-    host: s.host || common.host || '',
-    'user-agent': s.userAgent || common.userAgent || '',
+    'user-agent': APP_USER_AGENT,
     'hupu-new-sign': s.hupuNewSign || common.hupuNewSign || '',
     'hupu-encrypt-salt': s.hupuEncryptSalt || '',
     'hupu-key-version': '1',

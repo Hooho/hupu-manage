@@ -423,8 +423,8 @@ function ConfigPage() {
                       <label className="field-label">App 认证（可选）</label>
                       <span className="field-hint">
                         用于 notifyShare / appReply / appFollow 等 mobileapi 操作。
-                        userAgent / x-hupu-token / cookie 三个字段账号级共享；
-                        host / hupu-new-sign / hupu-encrypt-salt 每个接口单独配（per-request 变）。
+                        x-hupu-token / cookie 账号级共享（同一账号同一会话）；
+                        hupu-new-sign / hupu-encrypt-salt 每个接口单独配（per-request 变，session 过期重抓）。
                         详见抓包说明.md
                       </span>
                     </div>
@@ -447,15 +447,7 @@ function ConfigPage() {
                           fontFamily: 'ui-monospace, SFMono-Regular, monospace'
                         }}
                       >
-                        📱 账号共享（3 字段）
-                      </div>
-                      <div className="field" style={{ marginTop: 8, marginBottom: 10 }}>
-                        <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>user-agent</label>
-                        <input
-                          className="input"
-                          value={editingAccount.appAuth?.userAgent || ''}
-                          onChange={(e) => updateAppAuth('userAgent', e.target.value)}
-                        />
+                        📱 账号共享（2 字段）
                       </div>
                       <div className="field" style={{ marginBottom: 10 }}>
                         <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>x-hupu-token</label>
@@ -516,15 +508,6 @@ function ConfigPage() {
                               }}
                             >
                               {s.key}
-                            </div>
-                            <div className="field" style={{ marginBottom: 10 }}>
-                              <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>host</label>
-                              <input
-                                className="input"
-                                value={v.host || ''}
-                                onChange={(e) => updateAppSession(s.key, 'host', e.target.value)}
-                                placeholder="games.mobileapi.hupu.com"
-                              />
                             </div>
                             <div className="field" style={{ marginBottom: 10 }}>
                               <label className="field-label" style={{ fontSize: 'var(--fs-12)' }}>hupu-new-sign</label>
