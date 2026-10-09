@@ -1142,13 +1142,25 @@ function ScheduleTab() {
       const d = res.data
       if (d.skipped) {
         if (d.reason === '今日已跑过') {
-          const retryHint = meta.hasFailures
-            ? '如需重跑失败请点「立即跑」，'
-            : ''
-          setFeedback({
-            type: 'warn',
-            msg: `「${id}」今天已经跑过了（${d.todayRun?.at}）。${retryHint}全部重跑请点「强制重跑」。`
-          })
+          // 操作统计：区分「任务跑完但操作全失败」的情况
+          const opOk = d.todayRun?.operationOk ?? 0
+          const opFail = d.todayRun?.operationFailed ?? 0
+          const opTotal = d.todayRun?.operationTotal ?? 0
+          let msgType = 'warn'
+          let msg = `「${id}」今天已经跑过了（${d.todayRun?.at}）。`
+          if (opTotal > 0 && opFail > 0 && opOk === 0) {
+            msg = `「${id}」今日 ${d.todayRun?.at} 已跑完，但所有 ${opFail} 条操作都失败（虎扑接口 502/限流/抓包过期都有可能）。点「立即跑」重试失败操作。`
+            msgType = 'err'
+          } else if (opFail > 0) {
+            msg = `「${id}」今日 ${d.todayRun?.at} 已跑完：${opOk}/${opTotal} 条成功，${opFail} 条失败。点「立即跑」重试失败操作。`
+            msgType = 'warn'
+          } else {
+            const retryHint = meta.hasFailures
+              ? '如需重跑失败请点「立即跑」，'
+              : ''
+            msg = `「${id}」今天已经跑过了（${d.todayRun?.at}）。${retryHint}全部重跑请点「强制重跑」。`
+          }
+          setFeedback({ type: msgType, msg })
         } else if (d.reason === '没有失败的操作可重跑') {
           setFeedback({
             type: 'info',
@@ -1244,6 +1256,41 @@ function ScheduleTab() {
         const entries = t.lastResult?.logEntries || []
         const counts = countLogs(entries)
         const failedCount = t.lastResult?.failedActions?.length || 0
+        // 三态：全部 ok / 部分失败 / 全部失败 / 任务层崩（task 出错无 result）
+        // 新逻辑任务（新代码下）有 operationOk/Failed/Total 字段；老任务 fallback 到 counts
+        const hasNewMetrics = t.lastResult?.operationOk !== undefined
+        const opOk = hasNewMetrics ? t.lastResult.operationOk : counts.ok
+        // counts.err = err 级日志条数（对应失败操作）
+        const opFail = hasNewMetrics ? t.lastResult.operationFailed : (counts.err || 0)
+        const opTotal = hasNewMetrics
+          ? t.lastResult.operationTotal
+          : (counts.ok || 0) + (counts.err || 0)
+        const allOpOk = opTotal > 0 && opFail === 0
+        const allOpFail = opTotal > 0 && opOk === 0
+        const partialFail = opOk > 0 && opFail > 0
+        // badge 配置
+        let badgeBg = 'var(--success-bg)'
+        let badgeColor = 'var(--success)'
+        let badgeText = `✓ 今日 ${t.todayRun?.at || ''} 全部 ${opOk || 0} 条成功`
+        if (t.ranToday && t.todayRun) {
+          if (!t.todayRun.success) {
+            badgeBg = 'var(--danger-bg)'
+            badgeColor = 'var(--danger)'
+            badgeText = `✗ 今日 ${t.todayRun.at} 任务未跑完`
+          } else if (opTotal === 0) {
+            badgeText = `✓ 今日 ${t.todayRun.at} 已完成（无操作）`
+          } else if (allOpFail) {
+            badgeBg = 'var(--danger-bg)'
+            badgeColor = 'var(--danger)'
+            badgeText = `✗ 今日 ${t.todayRun.at} 全部 ${opFail} 条失败`
+          } else if (partialFail) {
+            badgeBg = '#fff8e1'
+            badgeColor = '#b07a00'
+            badgeText = `⚠ 今日 ${t.todayRun.at} ${opOk}/${opTotal} 条成功，${opFail} 失败`
+          } else if (allOpOk) {
+            badgeText = `✓ 今日 ${t.todayRun.at} ${opOk}/${opTotal} 条成功`
+          }
+        }
         return (
           <div key={t.id} className="card" style={{ marginBottom: 12 }}>
             <div
@@ -1267,12 +1314,12 @@ function ScheduleTab() {
                         fontSize: 12,
                         padding: '2px 8px',
                         borderRadius: 'var(--r-pill)',
-                        background: t.todayRun.success ? 'var(--success-bg)' : 'var(--danger-bg)',
-                        color: t.todayRun.success ? 'var(--success)' : 'var(--danger)',
+                        background: badgeBg,
+                        color: badgeColor,
                         fontWeight: 500
                       }}
                     >
-                      {t.todayRun.success ? '✓' : '✗'} 今日 {t.todayRun.at} 已完成
+                      {badgeText}
                     </span>
                   )}
                   {t.running && (

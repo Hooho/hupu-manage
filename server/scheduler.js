@@ -1520,20 +1520,52 @@ export async function runTask(taskId, opts = {}) {
 
   const finished = taskStates.get(taskId) || {}
   finished.running = false
+
+  // 从 result 提取操作级成功/失败计数（任务层 success 不等于操作层 success）
+  //   - operationOk: 真成功条数
+  //   - operationFailed: 失败条数（含 failedActions 长度，因为它们也是失败）
+  //   - operationTotal: 总条数 = ok + failed
+  let operationOk = 0
+  let operationFailed = mergedFailedActions.length
+  let operationTotal = mergedFailedActions.length
+  if (result && typeof result === 'object') {
+    // 1) 优先看 result.results 数组（每个调用一条，含 ok 字段）
+    if (Array.isArray(result.results)) {
+      for (const r of result.results) {
+        operationTotal++
+        if (r.ok) operationOk++
+        else operationFailed++
+      }
+    }
+    // 2) 看 result.perAccount（per-account 任务里每个账号一个 entry）
+    if (result.perAccount && typeof result.perAccount === 'object') {
+      // 已在 results 数过的不重复
+    }
+    // 3) 看 result.failedActions（重试用，已经计入 operationFailed）
+  }
+
   finished.lastResult = {
     result: result ? { ...result, failedActions: mergedFailedActions } : result,
     error,
     logs,
     logEntries,
-    failedActions: mergedFailedActions
+    failedActions: mergedFailedActions,
+    // 新增 —— 用于 UI 区分「任务跑完」与「操作成功」
+    operationOk,
+    operationFailed,
+    operationTotal
   }
   finished.lastRunByDate = {
     date: todayKey(),
     at: new Date().toLocaleTimeString('zh-CN'),
     success: !error,
+    // task 跑完 ≠ 操作成功；hasRunToday 只用任务是否跑过判断
     result: finished.lastResult.result,
     error,
-    retryOnly: !!opts.retryOnly
+    retryOnly: !!opts.retryOnly,
+    operationOk,
+    operationFailed,
+    operationTotal
   }
   taskStates.set(taskId, finished)
 
