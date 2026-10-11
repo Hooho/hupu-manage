@@ -856,6 +856,58 @@ select {
 }
 
 /* ===========================================================
+   Page Tabs (页面内子 tab：回帖 / 评分)
+   =========================================================== */
+.page-tabs {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  padding: 3px;
+}
+.page-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: var(--fs-13);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: var(--t);
+  user-select: none;
+  font-weight: 400;
+}
+.page-tab:hover:not(:disabled) {
+  color: var(--text);
+}
+.page-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.page-tab.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--sh-sm);
+  font-weight: 500;
+}
+.page-tab .count {
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 0 6px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: var(--r-pill);
+}
+.page-tab.active .count {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* ===========================================================
    Account Tabs (平铺切换)
    =========================================================== */
 .account-tabs {
