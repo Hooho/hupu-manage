@@ -374,7 +374,30 @@ app.post('/api/scrape/:name', async (req, res) => {
     return res.status(404).json({ error: `未知抓取器: ${name}` })
   }
   try {
-    const result = await executeScraper(name, req.body || {})
+    // App 端 mobileapi scraper 需要 per-account session header
+    const config = await readConfig()
+    const primary = (config.accounts || []).find((a) => a.primary) || (config.accounts || [])[0] || {}
+    const params = {
+      ...(req.body || {}),
+      _account: primary,
+      _appSessions: primary.appSessions || {},
+      _appAuth: primary.appAuth || {}
+    }
+    // userCommentApp 特殊处理：deviceId 不在 session config 里（历史原因），
+    // 自动从任意 addFollow capture body 解析（form-encoded body 里有 deviceId）
+    if (name === 'userCommentApp' && !params.deviceId) {
+      const followMap = (config.appFollowConfig || {})[primary.id]?.addFollow || {}
+      for (const body of Object.values(followMap)) {
+        if (body) {
+          const m = body.match(/deviceId=([^&]+)/)
+          if (m) {
+            params.deviceId = decodeURIComponent(m[1])
+            break
+          }
+        }
+      }
+    }
+    const result = await executeScraper(name, params)
     res.json({ success: true, ...result })
   } catch (error) {
     console.error(`${SCRAPERS[name].label} 失败:`, error.message)

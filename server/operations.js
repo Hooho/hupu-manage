@@ -860,6 +860,135 @@ export const SCRAPERS = {
         items
       }
     }
+  },
+
+  /**
+   * 拉取某用户最近给球员/比赛打的评分 + 评论（App 端 mobileapi）
+   *
+   * URL: https://games.mobileapi.hupu.com/1/8.2.63/bplcommentapi/bpl/user/record/comment
+   *      ?userId=<puid>&queryParam=0&pageSize=10&clientId=...&crt=...&deviceId=...&token=...&sign=...
+   * 方法：GET（与 reply/follow 等 POST 不同）
+   * sign 位置：query string（不是 body）
+   * 依赖：appAuth（账号共享 x-hupu-token/cookie）+ appSessions.follow（session header）
+   *
+   * 入参：
+   *   userId     - 要查的用户 puid（如 21291079）
+   *   pageSize   - 每页条数（默认 10）
+   *   queryParam - 默认 0（含义未知，按 capture 传 0）
+   *   _account   - 注入的账号（per-account appSessions）
+   *   _appSessions - 兼容老路径（顶层 appSessions）
+   *
+   * 返回：加工后的 records，每条加 type 字段（player/match/team/unknown）方便上层筛选
+   */
+  userCommentApp: {
+    label: '用户评分记录（App）',
+    async run(params = {}) {
+      const { userId, pageSize = 10, queryParam = 0, deviceId: deviceIdParam } = params
+      if (!userId) throw new Error('userId 必填（要查的用户 puid）')
+      // 找 follow session（host/user-agent 跟这个接口一致）
+      const headers = appSessionHeaders(params, 'follow')
+      const clientId = '177441061' // capture 时的 clientId，固定即可
+      const crt = Date.now() + 1400
+      const night = '0'
+      const channel = 'huawei'
+      const teenagers = '0'
+      const timeZone = 'Asia/Shanghai'
+      // deviceId / token / sign：必须由 capture 提供（per-session 变）
+      const auth = (params._account && params._account.appAuth) || params._appAuth || {}
+      const s =
+        ((params._account && params._account.appSessions) || params._appSessions || {}).follow || {}
+      // deviceId 优先用参数（调用方传），其次 account.appAuth.deviceId（账号级设备标识），最后 session.deviceId
+      const deviceId = deviceIdParam || auth.deviceId || s.deviceId
+      const token = auth.xHupuToken || ''
+      const sign = s.hupuNewSign
+      if (!deviceId || !sign) {
+        throw new Error(
+          'userCommentApp 缺 session 字段（deviceId / hupuNewSign）。deviceId 临时从参数传，hupuNewSign 在 appSessions.follow'
+        )
+      }
+
+      const query = new URLSearchParams({
+        userId: String(userId),
+        queryParam: String(queryParam),
+        pageSize: String(pageSize),
+        clientId,
+        crt: String(crt),
+        night,
+        channel,
+        teenagers,
+        time_zone: timeZone,
+        deviceId,
+        token,
+        sign
+      })
+      const url = `https://games.mobileapi.hupu.com/1/8.2.63/bplcommentapi/bpl/user/record/comment?${query}`
+
+      const response = await axios.get(url, {
+        headers,
+        timeout: 15000
+      })
+      const data = response.data || {}
+      if (data.code !== 1) {
+        throw Object.assign(new Error(data.msg || `接口返回 code=${data.code}`), {
+          code: data.code,
+          raw: data
+        })
+      }
+      const records = data.data?.records || []
+
+      // 加工：每条加 type（player/match/team/unknown）、userScore、hasComment 等
+      const items = records.map((r) => {
+        const outBizType = r.itemInfo?.outBizType || ''
+        let type = 'unknown'
+        if (outBizType === 'basketball_item') type = 'player' // 球员
+        else if (outBizType === 'basketball_match') type = 'match' // 比赛
+        else if (outBizType.includes('team')) type = 'team' // 球队
+        return {
+          type, // 'player' / 'match' / 'team' / 'unknown'
+          outBizType, // 原始 outBizType
+          commentId: r.commentInfo?.commentId,
+          subjectId: r.commentInfo?.subjectId,
+          comment: r.commentInfo?.commentContent || '',
+          hasComment: !!r.commentInfo?.commentContent,
+          userScore: Number(r.scoreInfo?.userScore ?? r.itemInfo?.userScore ?? 0),
+          scoreAvg: r.itemInfo?.scoreAvg || '',
+          lightCount: Number(r.commentInfo?.lightCount ?? 0),
+          hasLight: !!r.commentInfo?.hasLight,
+          publishTime: r.commentInfo?.publishTime || '',
+          updateTime: r.scoreInfo?.updateTime || '',
+          // 评分对象信息
+          target: {
+            name: r.itemInfo?.name || '',
+            desc: r.itemInfo?.desc || '',
+            pic: r.itemInfo?.pic || '',
+            // 比赛专属
+            matchInfo: r.itemInfo?.matchInfo || null
+          },
+          // 被评用户信息
+          user: r.userInfo
+            ? {
+                nickname: r.userInfo.nickname,
+                header: r.userInfo.header
+              }
+            : null,
+          // 原始数据保留（方便 debug）
+          _raw: r
+        }
+      })
+
+      return {
+        source: url,
+        userId: String(userId),
+        count: items.length,
+        items,
+        // 统计
+        byType: items.reduce((acc, it) => {
+          acc[it.type] = (acc[it.type] || 0) + 1
+          return acc
+        }, {}),
+        withComment: items.filter((it) => it.hasComment).length
+      }
+    }
   }
 }
 
