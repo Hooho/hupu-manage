@@ -360,6 +360,67 @@ export const ACTIONS = {
       if (Number(data?.status) === 200) return { ok: true }
       return { ok: false, reason: data?.msg || `status=${data?.status}` }
     }
+  },
+
+  // ===========================================
+  // App 端举报评分评论（bbs.mobileapi.hupu.com / bbsreportapi）
+  // ===========================================
+  // 关键发现（2026-10）：
+  //   - host 是 bbs.mobileapi.hupu.com（**新 host**，跟 reply 一样但 endpoint 不同）
+  //   - 跟 reply 接口一样 body.sign 是真签名（绑全字段）
+  //   - 改 bizId 必 403
+  //   - 复用 reply session 的 host/user-agent/appAuth，但 hupu-new-sign/salt 需新 capture
+  // 业务：先调 userCommentApp 拿 (subjectId, commentId) → 拼 bizId → 调此 action 举报
+  // capture 时间：2026-10-11，bizId='299901220:2399038810'，reportReason=4
+  // 需新加 session key 'report'（在 appSessions 里），userAgent/xHupuToken/cookie 跟 reply 共享
+  appReportComment: {
+    label: 'App 举报评分评论',
+    url: () => 'https://bbs.mobileapi.hupu.com/1/8.2.63/bbsreportapi/report',
+    body: (p) => {
+      // 业务参数：bizId 是 "subjectId:commentId" 格式（来自 userCommentApp 返回）
+      const bizId = String(p.bizId || '').trim()
+      if (!bizId || !/^\d+:\d+$/.test(bizId)) {
+        throw new Error(
+          `appReportComment bizId 必填，格式 subjectId:commentId（从 userCommentApp 返回的 records[i].commentId+subjectId 拼），收到：${bizId}`
+        )
+      }
+      const reportReason = Number(p.reportReason || 4)
+      // 找 report session 拿 sign/salt
+      const account = p._account || {}
+      const s =
+        ((account.appSessions || {})['report']) || (p._appSessions && p._appSessions['report']) || {}
+      if (!s.hupuNewSign || !s.hupuEncryptSalt) {
+        throw new Error(
+          'appReportComment 缺 session 字段（hupuNewSign/hupuEncryptSalt），去账号 Tab 配 appSessions.report（可用 capture 粘贴自动填）'
+        )
+      }
+      const auth = account.appAuth || p._appAuth || {}
+      // 构造 body（跟 capture 完全一致，只是 bizId/reportReason 跟 session 配套）
+      const crt = String(Date.now() + 1400)
+      return {
+        reportType: 'SCORE_COMMENT',
+        reportReason,
+        target: { bizType: 'scoreComment', bizId },
+        clientId: '177441061',
+        crt,
+        night: '0',
+        channel: 'huawei',
+        teenagers: '0',
+        time_zone: 'Asia/Shanghai',
+        deviceId: s.deviceId || auth.deviceId || '',
+        token: auth.xHupuToken || '',
+        sign: s.hupuNewSign
+      }
+    },
+    headers: (p) => ({
+      ...appSessionHeaders(p, 'report'),
+      'content-type': 'application/json;charset=UTF-8'
+    }),
+    isSuccess: (data) => {
+      // 举报成功：code=1, msg=成功, data="202610:32811"（举报记录 id）
+      if (data?.code === 1 || data?.success === true) return { ok: true }
+      return { ok: false, reason: data?.msg || `code=${data?.code}` }
+    }
   }
 }
 
