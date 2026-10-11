@@ -126,6 +126,30 @@ function calculateMaxTime() {
   return Math.floor(Date.now() / 1000)
 }
 
+// 带指数退避的 HTTP GET 重试
+// 适用场景：虎扑 my.hupu.com 接口偶发 502/Network Error 时自动重试
+// - 默认 3 次尝试：立即 + 500ms + 2000ms（避开高频风控）
+// - 4xx 错误不重试（业务错误，重试无意义）
+async function httpGetWithRetry(url, options = {}, { maxAttempts = 3, baseDelayMs = 500 } = {}) {
+  let lastError
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await axios.get(url, options)
+    } catch (err) {
+      lastError = err
+      const status = err.response?.status
+      // 4xx 是业务错误（参数错、未授权等），重试也没用
+      if (status && status >= 400 && status < 500) throw err
+      if (attempt < maxAttempts) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1) // 500, 1000
+        console.log(`[httpGetWithRetry] attempt ${attempt}/${maxAttempts} failed (${err.message}), retry in ${delay}ms`)
+        await new Promise((r) => setTimeout(r, delay))
+      }
+    }
+  }
+  throw lastError
+}
+
 // =====================================================================
 // 全量抓取后台任务：把某个监控账号的历史回帖全部抽干，写到本地 cache
 // =====================================================================
@@ -181,12 +205,17 @@ async function fetchAllRepliesForEuid(euid) {
   try {
     while (page <= FETCH_ALL_MAX_PAGES) {
       const url = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${maxTime}&page=${page}&pageSize=${pageSize}`
-      const response = await axios.get(url, {
-        headers: {
-          cookie,
-          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        }
-      })
+      // fetch-all 也走重试（500/Network Error 概率比 live 单页低，但加上更稳）
+      const response = await httpGetWithRetry(
+        url,
+        {
+          headers: {
+            cookie,
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+          }
+        },
+        { maxAttempts: 3, baseDelayMs: 600 }
+      )
 
       if (response.data?.code !== 1 || !response.data.data) {
         await writeFetchProgress(euid, {
@@ -429,7 +458,11 @@ app.get('/api/replies/:euid', async (req, res) => {
           .json({ error: '还没有该账号的 cache，请先点「拉取全部」', code: 'NO_CACHE' })
       }
       const items = cache.items || []
-      const totalPages = Math.max(1, Math.ceil(items.length / pageSize))
+      // totalPages 优先用 cache.totalCount（fetch-all 抓完时存的用户信息里的 replyCount），
+      // 这样跟 live 模式基于 replyCount 算的 totalPages 一致，UI 上「第 N / 共 M 页」不会因为
+      // 数据源不同而跳变。如果 cache 没存 totalCount（旧格式）才回退到 items.length
+      const cacheTotal = cache.totalCount || items.length
+      const totalPages = Math.max(1, Math.ceil(cacheTotal / pageSize))
       const page = Math.min(parseInt(req.query.page) || 1, totalPages)
       const offset = (page - 1) * pageSize
       const slice = items.slice(offset, offset + pageSize)
@@ -485,12 +518,17 @@ app.get('/api/replies/:euid', async (req, res) => {
 
     console.log(`请求第${page}页，使用maxTime: ${maxTime}`)
 
-    const response = await axios.get(url, {
-      headers: {
-        'cookie': cookie,
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-      }
-    })
+    // 单页接口也加重试（Hupu my.hupu.com 偶发 502/Network Error 自动重试）
+    const response = await httpGetWithRetry(
+      url,
+      {
+        headers: {
+          'cookie': cookie,
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+      },
+      { maxAttempts: 3, baseDelayMs: 600 }
+    )
 
     if (response.data.code === 1 && response.data.data) {
       const replies = response.data.data.replyWithQuoteDtoList || []
@@ -519,14 +557,23 @@ app.get('/api/replies/:euid', async (req, res) => {
 
       console.log(`第${page}页返回，新的maxTime: ${newMaxTime}`)
 
+      // 从 users.json 里的 replyCount 推算总页数，给前端做 "1/63" 进度展示
+      // replyCount 是字符串 "1810"，可能没有该字段（返回 '-' 时跳过）
+      const replyCountNum = Number.parseInt(userInfo.replyCount, 10)
+      const totalPages =
+        Number.isFinite(replyCountNum) && replyCountNum > 0
+          ? Math.ceil(replyCountNum / pageSize)
+          : null
+
       res.json({
         euid,
         username: userInfo.username || repliesWithStatus[0]?.username || euid,
         userInfo,
         page,
         pageSize,
-        totalPages: null,    // live 模式不知道总页数，让前端基于 hasNext 推断
-        totalCount: null,
+        totalPages,           // live 模式也能基于 replyCount 估算
+        totalCount: Number.isFinite(replyCountNum) ? replyCountNum : null,
+        replyCount: Number.isFinite(replyCountNum) ? replyCountNum : null,
         hasNext,
         hasPrev: page > 1,
         maxTime: newMaxTime,
