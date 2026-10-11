@@ -565,7 +565,7 @@ const loadReplies = async (euid, mode = 'reset') => {
         </div>
       </div>
 
-      {/* 账号选择器行（只放账号 + 状态文字，按钮挪到下面 tab 行） */}
+      {/* 账号选择器行（只放账号 tabs，状态文字挪到下面 tab 行） */}
       <div className="toolbar">
         <AccountSelect
           items={accountItems}
@@ -573,32 +573,6 @@ const loadReplies = async (euid, mode = 'reset') => {
           onValueChange={setActiveEuid}
           disabled={busy || scoresBusy}
         />
-        {activeTab === 'replies' ? (
-          <>
-            {/* 当前页数 / 总页数 + 数据源 badge */}
-            <span className="muted">
-              第 {page} 页
-              {userData?.totalPages ? ` / 共 ${userData.totalPages} 页` : ''}
-            </span>
-            {userData?.source === 'cache' && (
-              <span className="badge accent" style={{ marginLeft: 6 }}>缓存</span>
-            )}
-            {/* 当前账号的抓取状态展示 */}
-            {fpRunning ? (
-              <span className="muted" style={{ marginLeft: 8 }}>
-                抓取中 · 已抓 {fp.fetchedCount} 条 · 第 {fp.page} 页
-              </span>
-            ) : fp.status === 'completed' ? (
-              <span className="muted" style={{ marginLeft: 8 }}>
-                ✓ 已抓 {fp.fetchedCount} 条
-              </span>
-            ) : fp.status === 'failed' ? (
-              <span className="badge danger" title={fp.error || ''} style={{ marginLeft: 8 }}>
-                抓取失败
-              </span>
-            ) : null}
-          </>
-        ) : null}
       </div>
 
       {/* tab 切换行 + 操作按钮（同行） */}
@@ -630,6 +604,26 @@ const loadReplies = async (euid, mode = 'reset') => {
         {/* tab 行的右侧操作按钮：replies 显示「全量抓取 + 刷新」，scores 显示「数量 + 刷新」 */}
         {activeTab === 'replies' ? (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* 当前页数 / 总页数 */}
+            <span className="muted">
+              第 {page} 页
+              {userData?.totalPages ? ` / 共 ${userData.totalPages} 页` : ''}
+            </span>
+            {userData?.source === 'cache' && (
+              <span className="badge accent">缓存</span>
+            )}
+            {/* 当前账号的抓取状态展示 */}
+            {fpRunning ? (
+              <span className="muted">
+                抓取中 · 已抓 {fp.fetchedCount} 条 · 第 {fp.page} 页
+              </span>
+            ) : fp.status === 'completed' ? (
+              <span className="muted">✓ 已抓 {fp.fetchedCount} 条</span>
+            ) : fp.status === 'failed' ? (
+              <span className="badge danger" title={fp.error || ''}>
+                抓取失败
+              </span>
+            ) : null}
             <Button
               size="sm"
               onClick={() => triggerFetchAll(activeEuid)}
