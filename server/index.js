@@ -26,8 +26,23 @@ const OPERATIONS_FILE = path.join(DATA_DIR, 'operations.json')
 const PROGRESS_FILE = path.join(DATA_DIR, 'progress.json')
 const STATS_FILE = path.join(DATA_DIR, 'stats.json')
 
+// 全量回帖缓存目录（每个监控账号一个文件 / 一份完整 items 数组）
+// 写入触发：POST /api/replies/:euid/fetch-all 后台抽干循环
+// 读取触发：GET /api/replies/:euid?source=cache 按 page 切片
+const REPLIES_CACHE_DIR = path.join(DATA_DIR, 'replies-cache')
+// 全量抓取进度目录（每个 euid 一份 status / page / fetchedCount）
+const FETCH_PROGRESS_DIR = path.join(DATA_DIR, 'fetch-progress')
+const cachePath = (euid) => path.join(REPLIES_CACHE_DIR, `${euid}.json`)
+const fetchProgressPath = (euid) => path.join(FETCH_PROGRESS_DIR, `${euid}.json`)
+
+// 全量抓取的安全上限（防止账号有海量回帖或接口异常时把后端拖死）
+const FETCH_ALL_MAX_PAGES = 500           // 最多跑 500 页 = 25,000 条
+const FETCH_ALL_PAGE_DELAY_MS = 300       // 每页之间 sleep 一下，避免被风控
+
 // 确保数据目录存在
 await fs.mkdir(DATA_DIR, { recursive: true })
+await fs.mkdir(REPLIES_CACHE_DIR, { recursive: true })
+await fs.mkdir(FETCH_PROGRESS_DIR, { recursive: true })
 
 // 读取配置
 async function readConfig() {
@@ -111,6 +126,135 @@ function calculateMaxTime() {
   return Math.floor(Date.now() / 1000)
 }
 
+// =====================================================================
+// 全量抓取后台任务：把某个监控账号的历史回帖全部抽干，写到本地 cache
+// =====================================================================
+//
+// 设计要点：
+// 1. 复用现有的 getReplyList 接口（Hupu 私有风控同意通过主 cookie）
+// 2. 写两份文件：
+//    - server/data/replies-cache/<euid>.json：完整 items 数组（按 page 切分读取）
+//    - server/data/fetch-progress/<euid>.json：进度状态（status/page/fetchedCount）
+// 3. 每页之间 sleep 一下，避免被虎扑判定异常流量
+// 4. 安全上限 FETCH_ALL_MAX_PAGES：极端账号（万级回帖）自动终止不爆后端
+// 5. 失败时 status='failed'，让前端可以重试而不是一直转圈
+async function readFetchProgress(euid) {
+  try {
+    const data = await fs.readFile(fetchProgressPath(euid), 'utf-8')
+    return JSON.parse(data)
+  } catch {
+    return { status: 'idle', page: 0, fetchedCount: 0 }
+  }
+}
+
+async function writeFetchProgress(euid, progress) {
+  await fs.writeFile(fetchProgressPath(euid), JSON.stringify(progress, null, 2))
+}
+
+async function fetchAllRepliesForEuid(euid) {
+  // 先检查 cookie → 失败前置，写 status=failed
+  // 如果顺序反了，下面的「启动状态」会覆盖 failed，前端一直转圈
+  const cookie = await getPrimaryCookie()
+  if (!cookie) {
+    await writeFetchProgress(euid, {
+      status: 'failed',
+      error: '请先在「账号」tab 配置主账号 Cookie',
+      fetchedCount: 0,
+      finishedAt: Date.now()
+    })
+    return
+  }
+
+  // 启动状态（必须在 cookie 校验之后写）
+  await writeFetchProgress(euid, {
+    status: 'running',
+    page: 0,
+    fetchedCount: 0,
+    startedAt: Date.now()
+  })
+
+  const allItems = []
+  let page = 1
+  let maxTime = Date.now()
+  const pageSize = 50
+
+  try {
+    while (page <= FETCH_ALL_MAX_PAGES) {
+      const url = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${maxTime}&page=${page}&pageSize=${pageSize}`
+      const response = await axios.get(url, {
+        headers: {
+          cookie,
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+      })
+
+      if (response.data?.code !== 1 || !response.data.data) {
+        await writeFetchProgress(euid, {
+          status: 'failed',
+          error: 'Hupu API 返回错误（code != 1）',
+          page,
+          fetchedCount: allItems.length,
+          finishedAt: Date.now()
+        })
+        return
+      }
+
+      const replies = response.data.data.replyWithQuoteDtoList || []
+      if (replies.length === 0) break // 安全网：万一 nextPage 不可靠
+      allItems.push(...replies)
+      maxTime = response.data.data.maxTime || maxTime
+      const hasNext = !!response.data.data.nextPage
+
+      await writeFetchProgress(euid, {
+        status: 'running',
+        page,
+        fetchedCount: allItems.length,
+        lastMaxTime: maxTime,
+        updatedAt: Date.now()
+      })
+
+      if (!hasNext) break
+      page++
+      await new Promise((r) => setTimeout(r, FETCH_ALL_PAGE_DELAY_MS))
+    }
+
+    // 拉完了：写 cache 文件
+    await fs.writeFile(
+      cachePath(euid),
+      JSON.stringify(
+        {
+          euid,
+          username: allItems[0]?.username || '',
+          fetchedAt: Date.now(),
+          totalCount: allItems.length,
+          pageSize,
+          items: allItems
+        },
+        null,
+        2
+      )
+    )
+
+    await writeFetchProgress(euid, {
+      status: 'completed',
+      page,
+      fetchedCount: allItems.length,
+      lastMaxTime: maxTime,
+      finishedAt: Date.now()
+    })
+
+    console.log(`[fetch-all] ${euid} 完成：${allItems.length} 条 / ${page} 页`)
+  } catch (err) {
+    console.error(`[fetch-all] ${euid} 失败:`, err.message)
+    await writeFetchProgress(euid, {
+      status: 'failed',
+      error: err.message,
+      fetchedCount: allItems.length,
+      finishedAt: Date.now()
+    })
+  }
+}
+
 // 获取配置
 app.get('/api/config', async (req, res) => {
   const config = await readConfig()
@@ -120,7 +264,11 @@ app.get('/api/config', async (req, res) => {
 // App 端 mobileapi 接口的 session 配置（4 个 app 操作共用一套配置结构）
 app.get('/api/app-sessions', async (req, res) => {
   const config = await readConfig()
-  res.json(config.appSessions || {})
+  // 合并：主账号 appSessions + 顶层 appSessions（兼容老路径）
+  const accounts = config.accounts || []
+  const primary = accounts.find((a) => a.primary) || accounts[0] || {}
+  const merged = { ...(config.appSessions || {}), ...(primary.appSessions || {}) }
+  res.json(merged)
 })
 
 // 更新单个 session
@@ -226,10 +374,97 @@ app.post('/api/preview/thread', async (req, res) => {
   }
 })
 
+// 触发某个 euid 的全量抓取（后台任务，不阻塞响应）
+// 已运行时返回 409 防止并发
+app.post('/api/replies/:euid/fetch-all', async (req, res) => {
+  const { euid } = req.params
+  const current = await readFetchProgress(euid)
+  if (current.status === 'running') {
+    return res.status(409).json({ error: '任务已在运行中', progress: current })
+  }
+  res.json({ ok: true, message: '已启动' })
+  // fire-and-forget：异步跑，前端轮询 /fetch-progress 看进度
+  fetchAllRepliesForEuid(euid).catch((e) =>
+    console.error(`[fetch-all ${euid}] 未捕获异常:`, e)
+  )
+})
+
+// 查询某个 euid 的全量抓取进度（前端轮询用）
+app.get('/api/replies/:euid/fetch-progress', async (req, res) => {
+  const { euid } = req.params
+  res.json(await readFetchProgress(euid))
+})
+
+// 删除某个 euid 的 cache 文件（用于「强制重新抓」按钮；前端可读 cache 状态后提示）
+app.delete('/api/replies/:euid/cache', async (req, res) => {
+  const { euid } = req.params
+  try {
+    await fs.unlink(cachePath(euid))
+    res.json({ ok: true })
+  } catch {
+    res.json({ ok: false, message: 'cache 不存在' })
+  }
+})
+
 // 获取单个用户的回帖列表
+// query:
+//   - source=cache|live（默认 live）
+//   - page=N（默认 1）
+//   source=cache 时：读本地 replies-cache/<euid>.json，按 pageSize=50 切片返回
+//   source=live 时：原行为，直接请求 Hupu 接口
 app.get('/api/replies/:euid', async (req, res) => {
   try {
     const { euid } = req.params
+    const source = req.query.source || 'live'
+    const pageSize = 50
+
+    // ---- cache 模式 ----
+    if (source === 'cache') {
+      let cache
+      try {
+        cache = JSON.parse(await fs.readFile(cachePath(euid), 'utf-8'))
+      } catch {
+        return res
+          .status(404)
+          .json({ error: '还没有该账号的 cache，请先点「拉取全部」', code: 'NO_CACHE' })
+      }
+      const items = cache.items || []
+      const totalPages = Math.max(1, Math.ceil(items.length / pageSize))
+      const page = Math.min(parseInt(req.query.page) || 1, totalPages)
+      const offset = (page - 1) * pageSize
+      const slice = items.slice(offset, offset + pageSize)
+
+      // 重新算 submitted/submitCount：cache 是历史抓的，举报状态可能已变化
+      const operations = await readOperations()
+      const submitCountMap = new Map()
+      for (const op of operations) {
+        if (op.submitted === true || op.status === 'success') {
+          submitCountMap.set(op.id, (submitCountMap.get(op.id) || 0) + 1)
+        }
+      }
+      const repliesWithStatus = slice.map((r) => {
+        const count = submitCountMap.get(r.pid) || 0
+        return { ...r, submitted: count > 0, submitCount: count }
+      })
+
+      return res.json({
+        euid,
+        username: cache.username || euid,
+        userInfo: {},
+        page,
+        pageSize,
+        totalPages,
+        totalCount: cache.totalCount || items.length,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+        maxTime: null,
+        source: 'cache',
+        fetchedAt: cache.fetchedAt || null,
+        replies: repliesWithStatus
+      })
+    }
+
+    // ---- live 模式（原逻辑，行为完全不变）----
     const cookie = await getPrimaryCookie()
 
     if (!cookie) {
@@ -242,7 +477,6 @@ app.get('/api/replies/:euid', async (req, res) => {
 
     const userProgress = progress[euid] || { page: 1, maxTime: calculateMaxTime() }
     const page = parseInt(req.query.page) || userProgress.page
-    const pageSize = 50
 
     // 如果请求第一页，使用当前时间戳；否则使用保存的 maxTime
     const maxTime = page === 1 ? calculateMaxTime() : userProgress.maxTime
@@ -290,8 +524,13 @@ app.get('/api/replies/:euid', async (req, res) => {
         username: userInfo.username || repliesWithStatus[0]?.username || euid,
         userInfo,
         page,
+        pageSize,
+        totalPages: null,    // live 模式不知道总页数，让前端基于 hasNext 推断
+        totalCount: null,
         hasNext,
+        hasPrev: page > 1,
         maxTime: newMaxTime,
+        source: 'live',
         replies: repliesWithStatus
       })
     } else {
@@ -324,8 +563,11 @@ app.post('/api/report', async (req, res) => {
 // 通用操作 endpoint
 // body 透传给对应 action 的 body builder
 // 例：POST /api/action/recommend  body={tid, fid, status: 1|0}
+//     POST /api/action/app-report-comment  body={bizId, reportReason}
 app.post('/api/action/:name', async (req, res) => {
-  const name = req.params.name
+  // kebab → camel（URL 友好，内部保持 camelCase）
+  const rawName = req.params.name
+  const name = rawName.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
   if (!ACTIONS[name]) {
     return res.status(404).json({ error: `未知操作: ${name}` })
   }
@@ -436,6 +678,26 @@ app.post('/api/save-progress', async (req, res) => {
 app.get('/api/users', async (req, res) => {
   const users = await readUsers()
   res.json(users)
+})
+
+// 更新被监控用户的 puid（用于 App 接口拉评分，App 接口 userId 是 puid 不是 euid）
+// body: { euid: string, puid: string }
+app.post('/api/user-puid', async (req, res) => {
+  try {
+    const { euid, puid } = req.body
+    if (!euid) return res.status(400).json({ error: '缺少 euid' })
+    const users = await readUsers()
+    const i = users.findIndex((u) => u.euid === euid)
+    if (i < 0) {
+      users.push({ euid, puid: String(puid || '').trim() })
+    } else {
+      users[i] = { ...users[i], puid: String(puid || '').trim() }
+    }
+    await saveUsers(users)
+    res.json({ success: true, user: users[i] })
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
 })
 
 // 抓取用户主页信息
