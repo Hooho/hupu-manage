@@ -565,7 +565,7 @@ const loadReplies = async (euid, mode = 'reset') => {
         </div>
       </div>
 
-      {/* 账号选择器行（两个 tab 都共用） */}
+      {/* 账号选择器行（只放账号 + 状态文字，按钮挪到下面 tab 行） */}
       <div className="toolbar">
         <AccountSelect
           items={accountItems}
@@ -573,25 +573,7 @@ const loadReplies = async (euid, mode = 'reset') => {
           onValueChange={setActiveEuid}
           disabled={busy || scoresBusy}
         />
-        {activeTab === 'scores' ? (
-          <>
-            <span className="muted">数量</span>
-            <select
-              className="input"
-              value={scoresPageSize}
-              onChange={(e) => setScoresPageSize(Number(e.target.value))}
-              style={{ width: 80, padding: '4px 8px', height: 28, fontSize: 'var(--fs-12)' }}
-            >
-              <option value={10}>10</option>
-              <option value={30}>30</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-            </select>
-            <Button className="ml-auto" onClick={() => loadScores(activeEuid)} disabled={scoresBusy}>
-              {scoresLoading ? '拉取中…' : '刷新'}
-            </Button>
-          </>
-        ) : (
+        {activeTab === 'replies' ? (
           <>
             {/* 当前页数 / 总页数 + 数据源 badge */}
             <span className="muted">
@@ -615,12 +597,43 @@ const loadReplies = async (euid, mode = 'reset') => {
                 抓取失败
               </span>
             ) : null}
-            {/* 「全量抓取」按钮：ramping / 已完成 / 失败 / idle 切换不同 label */}
+          </>
+        ) : null}
+      </div>
+
+      {/* tab 切换行 + 操作按钮（同行） */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          marginBottom: 10
+        }}
+      >
+        <div className="page-tabs">
+          <button
+            type="button"
+            className={`page-tab ${activeTab === 'replies' ? 'active' : ''}`}
+            onClick={() => setActiveTab('replies')}
+          >
+            回帖
+          </button>
+          <button
+            type="button"
+            className={`page-tab ${activeTab === 'scores' ? 'active' : ''}`}
+            onClick={() => setActiveTab('scores')}
+          >
+            评分
+          </button>
+        </div>
+
+        {/* tab 行的右侧操作按钮：replies 显示「全量抓取 + 刷新」，scores 显示「数量 + 刷新」 */}
+        {activeTab === 'replies' ? (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
             <Button
               size="sm"
               onClick={() => triggerFetchAll(activeEuid)}
               disabled={fpRunning}
-              style={{ marginLeft: 8 }}
             >
               {fpRunning
                 ? '抓取中…'
@@ -631,32 +644,36 @@ const loadReplies = async (euid, mode = 'reset') => {
                 : '📥 全量抓取'}
             </Button>
             <Button
-              className="ml-auto"
+              size="sm"
               onClick={() => loadReplies(activeEuid, 'refresh')}
               disabled={busy}
             >
               {loading ? '加载中…' : '刷新'}
             </Button>
-          </>
+          </div>
+        ) : (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span className="muted">数量</span>
+            <select
+              className="input"
+              value={scoresPageSize}
+              onChange={(e) => setScoresPageSize(Number(e.target.value))}
+              style={{ width: 80, padding: '4px 8px', height: 28, fontSize: 'var(--fs-12)' }}
+            >
+              <option value={10}>10</option>
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+            <Button
+              size="sm"
+              onClick={() => loadScores(activeEuid)}
+              disabled={scoresBusy}
+            >
+              {scoresLoading ? '拉取中…' : '刷新'}
+            </Button>
+          </div>
         )}
-      </div>
-
-      {/* 账号下面：tab 切换 */}
-      <div className="page-tabs" style={{ marginBottom: 10 }}>
-        <button
-          type="button"
-          className={`page-tab ${activeTab === 'replies' ? 'active' : ''}`}
-          onClick={() => setActiveTab('replies')}
-        >
-          回帖
-        </button>
-        <button
-          type="button"
-          className={`page-tab ${activeTab === 'scores' ? 'active' : ''}`}
-          onClick={() => setActiveTab('scores')}
-        >
-          评分
-        </button>
       </div>
 
       {/* ============================== */}
