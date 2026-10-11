@@ -31,7 +31,10 @@ function HomePage() {
   const [selected, setSelected] = useState(new Set())
   const [progress, setProgress] = useState(null)
   const [failed, setFailed] = useState(new Set())
+  const [appendError, setAppendError] = useState(null) // append 失败：'网络错误' / null
   const loadMoreRef = useRef(null) // IntersectionObserver 目标
+  const lastTriggerRef = useRef(0) // 上次自动加载时间戳（节流 1.5s）
+  const loadRepliesRef = useRef(null) // loadReplies 最新引用（IO 触发时调用）
 
   // 评分 tab state
   const [scores, setScores] = useState(null) // { items, source, hasMore, queryParam, totalCount }
@@ -71,6 +74,7 @@ function HomePage() {
       // 切换账号时两个 tab 各自重新拉数据（跟回帖 tab 切账号行为一致）
       if (activeTab === 'replies') {
         setSelected(new Set())
+        setAppendError(null) // 切账号清错误
         loadReplies(activeEuid, 'reset')
       } else if (activeTab === 'scores') {
         setScoresStack([]) // 切账号清空翻页栈
@@ -129,6 +133,8 @@ const loadReplies = async (euid, mode = 'reset') => {
 
     if (isAppend) setLoadingMore(true)
     else setLoading(true)
+    // 触发时清掉旧错误（让 UI 不再显示「重试」按钮）
+    if (isAppend) setAppendError(null)
 
     try {
       // 决定 source：从 fetchProgress 判断 cache 是否存在
@@ -188,17 +194,34 @@ const loadReplies = async (euid, mode = 'reset') => {
           })
           return res.data
         } catch (e2) {
-          toast.error('加载失败: ' + e2.message)
+          // 失败处理同下
+          handleLoadError(e2, isAppend)
           return null
         }
       }
-      toast.error('加载失败: ' + error.message)
+      handleLoadError(error, isAppend)
       return null
     } finally {
       setLoading(false)
       setLoadingMore(false)
     }
   }
+
+  // loadReplies 失败的统一处理：
+  // - append 模式：写到 appendError，UI 显示「重试」按钮；不再用 toast（避免连续弹）
+  // - reset/refresh：弹 toast
+  const handleLoadError = (error, isAppend) => {
+    const msg = error.response?.data?.error || error.message || '网络错误'
+    if (isAppend) {
+      setAppendError(msg)
+    } else {
+      toast.error('加载失败: ' + msg)
+    }
+  }
+
+  // 保持 loadRepliesRef 永远指向最新 loadReplies，
+  // 让 IntersectionObserver 的回调不会拿到 stale closure
+  loadRepliesRef.current = loadReplies
 
   // 拉所有监控账号的 fetch-progress（被定时轮询 effect 调用）
   const refreshAllFetchProgress = useCallback(async () => {
@@ -234,23 +257,28 @@ const loadReplies = async (euid, mode = 'reset') => {
   }
 
   // 滚到底自动加载（IntersectionObserver）
+  // - 节流 1.5s：快滚时不会一帧内多次触发
+  // - 用 loadRepliesRef 调用最新版本，避免 closure stale
+  // - appendError 期间不触发（让用户主动点重试）
   useEffect(() => {
-    if (!loadMoreRef.current || !hasMore || loadingMore || loading) return
+    if (!loadMoreRef.current || !hasMore || loadingMore || loading || appendError) return
     const el = loadMoreRef.current
     const obs = new IntersectionObserver(
       (entries) => {
-        // 出现在视口里 + 还有更多 + 不在加载中 → 加载下一页
-        if (entries[0]?.isIntersecting && hasMore && !loadingMore && !loading) {
-          loadReplies(activeEuid, 'append')
-        }
+        if (!entries[0]?.isIntersecting) return
+        const now = Date.now()
+        // 1.5s 节流：上一次自动触发后的 1.5s 内不响应
+        if (now - lastTriggerRef.current < 1500) return
+        if (!hasMore || loadingMore || loading || appendError) return
+        lastTriggerRef.current = now
+        loadRepliesRef.current?.(activeEuid, 'append')
       },
       // 提前 200px 触发，避免用户看到「加载中…」的空窗
       { rootMargin: '200px' }
     )
     obs.observe(el)
     return () => obs.disconnect()
-    // 依赖 hasMore/loadingMore/loading/activeEuid 重新绑定监听器
-  }, [hasMore, loadingMore, loading, activeEuid, userData])
+  }, [hasMore, loadingMore, loading, appendError, activeEuid, userData])
 
   // 任一账号 fetch-progress 为 running 时启动 2s 轮询
   useEffect(() => {
@@ -565,8 +593,11 @@ const loadReplies = async (euid, mode = 'reset') => {
           </>
         ) : (
           <>
-            {/* 当前页数 + 数据源 badge */}
-            <span className="muted">第 {page} 页</span>
+            {/* 当前页数 / 总页数 + 数据源 badge */}
+            <span className="muted">
+              第 {page} 页
+              {userData?.totalPages ? ` / 共 ${userData.totalPages} 页` : ''}
+            </span>
             {userData?.source === 'cache' && (
               <span className="badge accent" style={{ marginLeft: 6 }}>缓存</span>
             )}
@@ -718,12 +749,23 @@ const loadReplies = async (euid, mode = 'reset') => {
             })}
 
           {/* 列表底部 sentinel + 手动加载更多按钮
-              - 滚到底自动触发（IntersectionObserver）
-              - 用户也可以手动点「加载更多」 */}
+              - 滚到底自动触发（IntersectionObserver，1.5s 节流）
+              - 用户也可以手动点「加载更多」/「重试」
+              三态：loadingMore（进度）/ appendError（重试）/ 默认（按钮） */}
           {hasMore && !loading && (
             <div ref={loadMoreRef} className="pager">
               {loadingMore ? (
-                <span className="muted">加载下一页中…</span>
+                <span className="muted">
+                  加载第 {page + 1} 页
+                  {userData?.totalPages ? ` / ${userData.totalPages}` : ''} 中…
+                </span>
+              ) : appendError ? (
+                <span className="muted" style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                  <span className="badge danger">加载失败: {appendError}</span>
+                  <Button size="sm" onClick={() => loadReplies(activeEuid, 'append')}>
+                    重试
+                  </Button>
+                </span>
               ) : (
                 <Button
                   size="sm"
@@ -737,7 +779,10 @@ const loadReplies = async (euid, mode = 'reset') => {
           )}
           {!hasMore && replies.length > 0 && !loading && (
             <div className="pager">
-              <span className="muted">已到底 · 共 {replies.length} 条</span>
+              <span className="muted">
+                已到底 · 共 {replies.length} 条
+                {userData?.totalCount ? `（账号回帖 ${userData.totalCount} 条）` : ''}
+              </span>
             </div>
           )}
         </>
