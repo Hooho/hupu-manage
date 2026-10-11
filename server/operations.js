@@ -935,16 +935,17 @@ export const SCRAPERS = {
    * 入参：
    *   userId     - 要查的用户 puid（如 21291079）
    *   pageSize   - 每页条数（默认 10）
-   *   queryParam - 默认 0（含义未知，按 capture 传 0）
+   *   queryParam - 翻页 cursor（首屏 0；下一页传上一次响应的 queryParam）
    *   _account   - 注入的账号（per-account appSessions）
    *   _appSessions - 兼容老路径（顶层 appSessions）
    *
    * 返回：加工后的 records，每条加 type 字段（player/match/team/unknown）方便上层筛选
+   * 翻页字段：hasMore（是否还有下一页）+ queryParam（下一页 cursor，传回入参即可）
    */
   userCommentApp: {
     label: '用户评分记录（App）',
     async run(params = {}) {
-      const { userId, pageSize = 10, queryParam = 0, deviceId: deviceIdParam } = params
+      const { userId, pageSize = 30, queryParam = 0, deviceId: deviceIdParam } = params
       if (!userId) throw new Error('userId 必填（要查的用户 puid）')
       // 找 follow session（host/user-agent 跟这个接口一致）
       const headers = appSessionHeaders(params, 'follow')
@@ -1042,6 +1043,12 @@ export const SCRAPERS = {
         userId: String(userId),
         count: items.length,
         items,
+        // 翻页字段：响应里有 totalCount / hasMore / queryParam（下一页 cursor）
+        // 第一页 queryParam 是请求传进来的 cursor（默认 0）；最后一页 cursor 通常不再是 0
+        totalCount: Number(data.data?.totalCount ?? items.length),
+        hasMore: !!data.data?.hasMore,
+        queryParam: data.data?.queryParam != null ? String(data.data.queryParam) : null,
+        pageSize: Number(pageSize),
         // 统计
         byType: items.reduce((acc, it) => {
           acc[it.type] = (acc[it.type] || 0) + 1
