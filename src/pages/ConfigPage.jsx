@@ -411,6 +411,18 @@ function ConfigPage() {
     setFetching('')
   }
 
+  // 保存被监控账号的 puid（评分 tab 用）
+  const savePuid = async (euid, puid) => {
+    const trimmed = puid.trim()
+    try {
+      await axios.post('/api/user-puid', { euid, puid: trimmed })
+      const u = await axios.get('/api/users')
+      setUsers(u.data)
+    } catch (error) {
+      toast.error('保存 puid 失败: ' + error.message)
+    }
+  }
+
   return (
     <div>
       <div className="page-head">
@@ -460,7 +472,7 @@ function ConfigPage() {
                 <div className="account-body">
                   <div className="account-name">{user.username || `用户 ${euid}`}</div>
                   <div className="account-meta">
-                    <span>{euid}</span>
+                    <span>euid {euid}</span>
                     {user.replyCount ? (
                       <>
                         <span className="sep">·</span>
@@ -481,6 +493,29 @@ function ConfigPage() {
                     ) : null}
                     <span className="sep">·</span>
                     <span>{fetched ? `更新于 ${new Date(user.lastUpdate).toLocaleDateString('zh-CN')}` : '未抓取'}</span>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 'var(--fs-12)',
+                      color: 'var(--text-3)'
+                    }}
+                  >
+                    <label htmlFor={`puid-${euid}`}>puid</label>
+                    <input
+                      id={`puid-${euid}`}
+                      className="input"
+                      defaultValue={user.puid || ''}
+                      placeholder="App 接口用（一般跟 euid 一样）"
+                      style={{ maxWidth: 220, height: 26, padding: '2px 8px', fontSize: 'var(--fs-12)' }}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim()
+                        if (v !== (user.puid || '')) savePuid(euid, v)
+                      }}
+                    />
                   </div>
                 </div>
                 <div className="account-actions">
