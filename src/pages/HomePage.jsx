@@ -136,7 +136,7 @@ function HomePage() {
 //   1. fetchProgress[euid].status === 'completed'（或 fetchedCount > 0）→ 用 cache
 //   2. 否则用 live（兜底，保证没 cache 的账号也能用）
 //   3. cache 接口返回 404 NO_CACHE 时自动回退 live（防止 fetch-progress 文件被误删）
-const loadReplies = async (euid, mode = 'reset') => {
+const loadReplies = async (euid, mode = 'reset', pageHint) => {
     const isAppend = mode === 'append'
     const isRefresh = mode === 'refresh'
 
@@ -151,7 +151,9 @@ const loadReplies = async (euid, mode = 'reset') => {
       const cacheReady = fp && (fp.status === 'completed' || (fp.status !== 'idle' && fp.fetchedCount > 0))
       const useSource = cacheReady ? 'cache' : 'live'
 
-      const currentPage = isAppend ? (userData?.page || 1) + 1 : 1
+      // append 模式优先用调用方传入的 pageHint（jumpToMarker 批量跳页时用），
+      // 没传才从 userData.page + 1 推算
+      const currentPage = isAppend ? (pageHint ?? (userData?.page || 1) + 1) : 1
       const res = await axios.get(`/api/replies/${euid}`, {
         params: { source: useSource, page: currentPage }
       })
@@ -183,7 +185,7 @@ const loadReplies = async (euid, mode = 'reset') => {
         error.response?.data?.code === 'NO_CACHE'
       ) {
         try {
-          const currentPage = isAppend ? (userData?.page || 1) + 1 : 1
+          const currentPage = isAppend ? (pageHint ?? (userData?.page || 1) + 1) : 1
           const res = await axios.get(`/api/replies/${euid}`, {
             params: { source: 'live', page: currentPage }
           })
@@ -287,15 +289,44 @@ const loadReplies = async (euid, mode = 'reset') => {
     }
   }
 
-  // 跳转到标记位置：在累积列表中找到 marker.pid 那条 reply，scrollIntoView
-  // 不在累积列表里（marker 在更深的页）：toast 提示用户继续滚动
-  const jumpToMarker = () => {
+  // 跳转到标记位置：
+//   - marker 已在累积列表里：直接 scrollIntoView
+//   - marker 在更深页：连续调 loadReplies 把 page 累积到 marker.page 附近，
+//     找到 ref 后 scroll；中途 hasMore=false 退出
+//   - 完全找不到：toast 提示
+const jumpToMarker = async () => {
     if (!readMarker) return
-    const el = replyRefs.current.get(readMarker.pid)
+    const targetPid = readMarker.pid
+
+    // 1. 已在累积列表里：直接滚
+    if (replyRefs.current.get(targetPid)) {
+      replyRefs.current.get(targetPid).scrollIntoView({ block: 'center', behavior: 'smooth' })
+      return
+    }
+
+    // 2. 没在：连续加载到 marker.page
+    setLoadingMore(true)
+    const startPage = userData?.page || 1
+    let page = startPage
+    const maxPages = (readMarker.page || startPage) - startPage + 20 // 兜底多 20 页
+    let attempts = 0
+    while (attempts < maxPages) {
+      page++
+      const res = await loadReplies(activeEuid, 'append', page)
+      // 等 React 把新 items 渲染到 DOM 上（ref callback 才会更新 replyRefs）
+      await new Promise((r) => requestAnimationFrame(r))
+      if (replyRefs.current.get(targetPid)) break
+      if (!res?.hasNext) break
+      attempts++
+    }
+    setLoadingMore(false)
+
+    // 3. 加载完滚动
+    const el = replyRefs.current.get(targetPid)
     if (el) {
       el.scrollIntoView({ block: 'center', behavior: 'smooth' })
     } else {
-      toast(`上次看到第 ${readMarker.page} 页（共 ${readMarker.totalCount} 条），需要继续滚动加载`)
+      toast('加载到末尾仍找不到标记（可能已被删除）')
     }
   }
   const handleLoadError = (error, isAppend) => {
