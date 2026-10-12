@@ -109,6 +109,11 @@ select {
   padding: 18px 0 16px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 28px;
+  /* 滚动时吸顶：始终在视口顶部，content 可在底下滚 */
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg);
 }
 
 .topbar .brand {
@@ -1040,6 +1045,44 @@ select {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* ===========================================================
+   Scroll to Top (回到顶部浮动按钮)
+   =========================================================== */
+.scroll-to-top {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-md);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 60;
+  transition: var(--t);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  /* 出现时从下方滑入 */
+  animation: scrollToTopIn 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.scroll-to-top:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  transform: translateY(-2px);
+  box-shadow: var(--sh-lg);
+}
+@keyframes scrollToTopIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ===========================================================

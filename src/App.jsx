@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import Topbar from './components/Topbar'
+import ScrollToTop from './components/ScrollToTop'
 import HomePage from './pages/HomePage'
 import ConfigPage from './pages/ConfigPage'
 import ReportResultsPage from './pages/ReportResultsPage'
@@ -28,6 +29,7 @@ function App() {
         <Route path="/results" element={<ReportResultsPage />} />
         <Route path="/settings" element={<ConfigPage />} />
       </Routes>
+      <ScrollToTop />
     </div>
   )
 }
