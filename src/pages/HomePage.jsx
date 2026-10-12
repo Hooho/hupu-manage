@@ -210,6 +210,32 @@ const loadReplies = async (euid, mode = 'reset') => {
   // loadReplies 失败的统一处理：
   // - append 模式：写到 appendError，UI 显示「重试」按钮；不再用 toast（避免连续弹）
   // - reset/refresh：弹 toast
+
+  // 「刷新」专用：调 POST /api/replies/:euid/refresh
+  // 后端会实时拉 Hupu 最新一页 + 跟 cache 按 pid 去重合并 + 写回 cache
+  // 失败：实时拉失败 → cache 不动，toast 提示
+  // 成功：toast 提示合并了几条新回帖（newCount > 0 才提示）
+  const refreshAndMerge = async (euid) => {
+    setLoading(true)
+    try {
+      const res = await axios.post(`/api/replies/${euid}/refresh`)
+      const items = res.data.replies || []
+      setReplies(items)
+      setUserData({ ...res.data, replies: undefined })
+      setHasMore(!!res.data.hasNext)
+      setSelected(new Set()) // refresh 重置选择（旧 pid 可能已不存在）
+      const n = res.data.newCount || 0
+      if (n > 0) {
+        toast.success(`已合并 ${n} 条新回帖`)
+      } else {
+        toast('已是最新，没有新回帖')
+      }
+    } catch (error) {
+      toast.error('刷新失败：' + (error.response?.data?.error || error.message))
+    } finally {
+      setLoading(false)
+    }
+  }
   const handleLoadError = (error, isAppend) => {
     const msg = error.response?.data?.error || error.message || '网络错误'
     if (isAppend) {
@@ -639,7 +665,7 @@ const loadReplies = async (euid, mode = 'reset') => {
             </Button>
             <Button
               size="sm"
-              onClick={() => loadReplies(activeEuid, 'refresh')}
+              onClick={() => refreshAndMerge(activeEuid)}
               disabled={busy}
             >
               {loading ? '加载中…' : '刷新'}
