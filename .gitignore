@@ -36,3 +36,12 @@ preview-compare*.html
 .nav-to-*.html
 *示图*.md
 *显示*.md
+# 根目录临时 md 文档（功能落地后没保留价值，按命名兜底排除）
+# AGENTS.md / readme.md 不会被这些规则匹配
+*说明*.md
+*更新*.md
+*总结*.md
+*方案*.md
+*优化*.md
+*抓包*.md
+*Tab切换*.md
