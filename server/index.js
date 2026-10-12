@@ -247,6 +247,21 @@ async function fetchAllRepliesForEuid(euid) {
       await new Promise((r) => setTimeout(r, FETCH_ALL_PAGE_DELAY_MS))
     }
 
+    // 精简 reply 对象：Hupu API 返回 29 个字段，UI 实际只用 9 个。
+// 丢 quoteInfo（嵌套对象占大头，每条都重复 29 字段）+ userIp（隐私）。
+// 保留 picInfos：举报时需要看图（14/50 的回帖带图）。
+const slimReply = (r) => ({
+  pid: r.pid,
+  tid: r.tid,
+  puid: r.puid,
+  topicId: r.topicId,
+  content: r.content,
+  formatTime: r.formatTime,
+  username: r.username,
+  title: r.title,
+  picInfos: r.picInfos || []
+})
+
     // 拉完了：写 cache 文件
     await fs.writeFile(
       cachePath(euid),
@@ -257,7 +272,7 @@ async function fetchAllRepliesForEuid(euid) {
           fetchedAt: Date.now(),
           totalCount: allItems.length,
           pageSize,
-          items: allItems
+          items: allItems.map(slimReply)
         },
         null,
         2
