@@ -491,6 +491,21 @@ select {
 .reply .check {
   margin-top: 2px;
 }
+/* 序号：在 checkbox 左侧，标识当前累积列表中的位置 */
+.reply-index {
+  flex-shrink: 0;
+  min-width: 36px;
+  text-align: right;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: var(--fs-12);
+  font-weight: 500;
+  color: var(--text-3);
+  padding: 2px 6px;
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  user-select: none;
+  align-self: flex-start;
+}
 .reply-body {
   flex: 1;
   min-width: 0;

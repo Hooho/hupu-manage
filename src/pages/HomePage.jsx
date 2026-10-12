@@ -815,7 +815,7 @@ const loadReplies = async (euid, mode = 'reset') => {
           )}
 
           {!loading &&
-            replies.map((item) => {
+            replies.map((item, index) => {
               const isFail = failed.has(item.pid)
               const isMarker = readMarker && readMarker.pid === item.pid
               return (
@@ -827,6 +827,8 @@ const loadReplies = async (euid, mode = 'reset') => {
                     else replyRefs.current.delete(item.pid)
                   }}
                 >
+                  {/* 序号：在 checkbox 左侧，灰底 monospace，标识当前累积列表中的位置 */}
+                  <span className="reply-index">#{index + 1}</span>
                   <Checkbox
                     checked={selected.has(item.pid)}
                     onCheckedChange={() => toggle(item.pid)}
