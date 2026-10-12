@@ -175,6 +175,24 @@ async function writeFetchProgress(euid, progress) {
   await fs.writeFile(fetchProgressPath(euid), JSON.stringify(progress, null, 2))
 }
 
+// 精简 reply 对象：Hupu API 返回 29 个字段，UI 实际只用 9 个。
+// 丢 quoteInfo（嵌套对象占大头，每条都重复 29 字段）+ userIp（隐私）。
+// 保留 picInfos：举报时需要看图（14/50 的回帖带图）。
+// 模块级函数：fetch-all 后台任务 + POST refresh 端点都要复用
+function slimReply(r) {
+  return {
+    pid: r.pid,
+    tid: r.tid,
+    puid: r.puid,
+    topicId: r.topicId,
+    content: r.content,
+    formatTime: r.formatTime,
+    username: r.username,
+    title: r.title,
+    picInfos: r.picInfos || []
+  }
+}
+
 async function fetchAllRepliesForEuid(euid) {
   // 先检查 cookie → 失败前置，写 status=failed
   // 如果顺序反了，下面的「启动状态」会覆盖 failed，前端一直转圈
@@ -247,22 +265,7 @@ async function fetchAllRepliesForEuid(euid) {
       await new Promise((r) => setTimeout(r, FETCH_ALL_PAGE_DELAY_MS))
     }
 
-    // 精简 reply 对象：Hupu API 返回 29 个字段，UI 实际只用 9 个。
-// 丢 quoteInfo（嵌套对象占大头，每条都重复 29 字段）+ userIp（隐私）。
-// 保留 picInfos：举报时需要看图（14/50 的回帖带图）。
-const slimReply = (r) => ({
-  pid: r.pid,
-  tid: r.tid,
-  puid: r.puid,
-  topicId: r.topicId,
-  content: r.content,
-  formatTime: r.formatTime,
-  username: r.username,
-  title: r.title,
-  picInfos: r.picInfos || []
-})
-
-    // 拉完了：写 cache 文件
+    // 拉完了：写 cache 文件（slimReply 是模块级函数，定义在 fetchAllRepliesForEuid 外面）
     await fs.writeFile(
       cachePath(euid),
       JSON.stringify(
@@ -437,6 +440,107 @@ app.post('/api/replies/:euid/fetch-all', async (req, res) => {
 app.get('/api/replies/:euid/fetch-progress', async (req, res) => {
   const { euid } = req.params
   res.json(await readFetchProgress(euid))
+})
+
+// 刷新：实时拉 Hupu 最新一页（page=1）+ 跟本地 cache 按 pid 去重合并 + 写回 cache
+// 用途：用户期望「看到最新回帖」但又不想重跑 fetch-all 全量抓取
+// 设计：
+//   1. 实时调 getReplyList page=1 拿最新 50 条
+//   2. 读 cache 文件，pid 去重
+//   3. 拼成 [liveItems, ...cacheRest]，整体仍按时间倒序（live 已在最前）
+//   4. 写回 cache 文件（items 更新，totalCount += newCount）
+//   5. 返回合并后的 page 1 + newCount 给前端展示
+//
+// 失败处理：实时拉失败 → 不动 cache，直接 502，前端 toast
+// 没 cache 文件：当成纯 live 请求处理（不报错）
+app.post('/api/replies/:euid/refresh', async (req, res) => {
+  try {
+    const { euid } = req.params
+    const cookie = await getPrimaryCookie()
+    if (!cookie) return res.status(400).json({ error: '请先配置主账号 Cookie' })
+
+    const pageSize = 50
+    const liveUrl = `https://my.hupu.com/pcmapi/pc/space/v1/getReplyList?euid=${euid}&maxTime=${Date.now()}&page=1&pageSize=${pageSize}`
+
+    // 1. 实时拉最新一页（带重试）
+    const liveResp = await httpGetWithRetry(
+      liveUrl,
+      {
+        headers: {
+          cookie,
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+      },
+      { maxAttempts: 3, baseDelayMs: 600 }
+    )
+
+    if (liveResp.data?.code !== 1 || !liveResp.data.data) {
+      return res.status(502).json({ error: 'Hupu API 返回错误' })
+    }
+
+    const liveItems = (liveResp.data.data.replyWithQuoteDtoList || []).map(slimReply)
+    const livePids = new Set(liveItems.map((r) => r.pid))
+
+    // 2. 读 cache（不存在当成 0 条）
+    let cache = null
+    try {
+      cache = JSON.parse(await fs.readFile(cachePath(euid), 'utf-8'))
+    } catch {
+      // 没 cache 文件：直接走纯 live 返回
+    }
+
+    // 3. 合并去重：cache 中去掉 livePids 里已有的，剩下的拼到 live 后面
+    // newCount = liveItems 中 cache 没有的（即真正新加到 cache 的回帖数）
+    let cacheRest = []
+    let newCount = liveItems.length // 默认全部是新（无 cache 时）
+    if (cache) {
+      const oldItems = cache.items || []
+      const oldPids = new Set(oldItems.map((r) => r.pid))
+      cacheRest = oldItems.filter((r) => !livePids.has(r.pid))
+      newCount = liveItems.filter((r) => !oldPids.has(r.pid)).length
+    }
+
+    const mergedItems = [...liveItems, ...cacheRest]
+    const totalAfterMerge = cache
+      ? (cache.totalCount || 0) + newCount
+      : liveItems.length
+
+    // 4. 写回 cache（不管之前有没有 cache 文件，都创建/覆盖）
+    await fs.writeFile(
+      cachePath(euid),
+      JSON.stringify(
+        {
+          euid,
+          username: liveItems[0]?.username || cache?.username || '',
+          fetchedAt: Date.now(),
+          totalCount: totalAfterMerge,
+          pageSize,
+          items: mergedItems
+        },
+        null,
+        2
+      )
+    )
+
+    // 5. 返回 page 1 + newCount
+    const totalPages = Math.max(1, Math.ceil(totalAfterMerge / pageSize))
+    res.json({
+      euid,
+      page: 1,
+      pageSize,
+      totalPages,
+      totalCount: totalAfterMerge,
+      hasNext: totalAfterMerge > pageSize,
+      hasPrev: false,
+      maxTime: liveResp.data.data.maxTime || null,
+      source: 'refresh',
+      newCount,
+      replies: liveItems
+    })
+  } catch (err) {
+    console.error('[refresh] 失败:', err.message)
+    res.status(502).json({ error: '实时拉取失败：' + (err.message || '网络错误') })
+  }
 })
 
 // 删除某个 euid 的 cache 文件（用于「强制重新抓」按钮；前端可读 cache 状态后提示）
