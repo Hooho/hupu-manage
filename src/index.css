@@ -537,6 +537,22 @@ select {
   border-radius: 0 2px 2px 0;
 }
 
+/* 阅读位置标识：用户「上次看到这里」marker 行
+   左侧 accent 色条 + 浅 accent 底色（和 .reply.done 的 green 风格一致） */
+.reply-marker {
+  background: var(--accent-bg);
+}
+.reply-marker::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+}
+
 /* ===========================================================
    Progress
    =========================================================== */

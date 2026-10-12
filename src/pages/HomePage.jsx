@@ -53,6 +53,12 @@ function HomePage() {
   const [fetchProgress, setFetchProgress] = useState({})
   const fetchProgressTimerRef = useRef(null)
 
+  // 阅读位置标识：{ pid, tid, page, totalCount, markedAt } | null
+  // 切账号时拉一次，列表渲染时给 marker 行加高亮 + 「📍 已标记」按钮变体
+  const [readMarker, setReadMarker] = useState(null)
+  // 每条 reply 的 DOM ref（用于 scrollIntoView 跳转到标记位置）
+  const replyRefs = useRef(new Map())
+
   useEffect(() => {
     loadConfig()
     loadSessionKeys()
@@ -75,7 +81,10 @@ function HomePage() {
       if (activeTab === 'replies') {
         setSelected(new Set())
         setAppendError(null) // 切账号清错误
+        setReadMarker(null) // 切账号先清掉旧 marker，等拉完再设
         loadReplies(activeEuid, 'reset')
+        // 异步拉新账号的 marker
+        loadReadMarker(activeEuid).then(setReadMarker)
       } else if (activeTab === 'scores') {
         setScoresStack([]) // 切账号清空翻页栈
         loadScores(activeEuid)
@@ -234,6 +243,59 @@ const loadReplies = async (euid, mode = 'reset') => {
       toast.error('刷新失败：' + (error.response?.data?.error || error.message))
     } finally {
       setLoading(false)
+    }
+  }
+
+  // 加载某个 euid 的阅读位置标识
+  // 没标记 → 返 null；有 → 返 { pid, tid, page, totalCount, markedAt }
+  const loadReadMarker = useCallback(async (euid) => {
+    try {
+      const res = await axios.get(`/api/read-marker/${euid}`)
+      return res.data || null
+    } catch {
+      return null
+    }
+  }, [])
+
+  // 标记「看到这里」：在某条 reply 上点 📍 按钮时调
+  const markReadHere = async (item) => {
+    if (!activeEuid) return
+    try {
+      const res = await axios.post(`/api/read-marker/${activeEuid}`, {
+        pid: item.pid,
+        tid: item.tid,
+        page: userData?.page || 1,
+        totalCount: userData?.totalCount || null
+      })
+      setReadMarker(res.data.marker)
+      toast.success('已标记，下次回这里继续')
+    } catch (error) {
+      toast.error('标记失败：' + (error.response?.data?.error || error.message))
+    }
+  }
+
+  // 清除标记：点 marker 行的「📍 已标记」按钮（再次点击 = 取消）或 toolbar 按钮
+  const clearReadMarker = async () => {
+    if (!activeEuid) return
+    try {
+      await axios.delete(`/api/read-marker/${activeEuid}`)
+      setReadMarker(null)
+      toast('已清除标记')
+    } catch (error) {
+      // 即便接口失败也清掉本地状态
+      setReadMarker(null)
+    }
+  }
+
+  // 跳转到标记位置：在累积列表中找到 marker.pid 那条 reply，scrollIntoView
+  // 不在累积列表里（marker 在更深的页）：toast 提示用户继续滚动
+  const jumpToMarker = () => {
+    if (!readMarker) return
+    const el = replyRefs.current.get(readMarker.pid)
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    } else {
+      toast(`上次看到第 ${readMarker.page} 页（共 ${readMarker.totalCount} 条），需要继续滚动加载`)
     }
   }
   const handleLoadError = (error, isAppend) => {
@@ -663,6 +725,17 @@ const loadReplies = async (euid, mode = 'reset') => {
                 ? '重试'
                 : '📥 全量抓取'}
             </Button>
+            {/* 阅读位置跳转：marker 存在时才显示，点击 scroll 到 marker.pid */}
+            {readMarker && (
+              <Button
+                size="sm"
+                onClick={jumpToMarker}
+                disabled={busy}
+                title="跳转到上次看到的位置"
+              >
+                📍 跳到标记
+              </Button>
+            )}
             <Button
               size="sm"
               onClick={() => refreshAndMerge(activeEuid)}
@@ -744,8 +817,16 @@ const loadReplies = async (euid, mode = 'reset') => {
           {!loading &&
             replies.map((item) => {
               const isFail = failed.has(item.pid)
+              const isMarker = readMarker && readMarker.pid === item.pid
               return (
-                <div key={item.pid} className="reply">
+                <div
+                  key={item.pid}
+                  className={`reply${isMarker ? ' reply-marker' : ''}`}
+                  ref={(el) => {
+                    if (el) replyRefs.current.set(item.pid, el)
+                    else replyRefs.current.delete(item.pid)
+                  }}
+                >
                   <Checkbox
                     checked={selected.has(item.pid)}
                     onCheckedChange={() => toggle(item.pid)}
@@ -755,6 +836,12 @@ const loadReplies = async (euid, mode = 'reset') => {
                     <div className="reply-content">{item.content}</div>
                     <div className="reply-meta">
                       <span>{item.formatTime}</span>
+                      {isMarker && (
+                        <>
+                          <span className="sep">·</span>
+                          <span className="badge accent">📍 上次看到这里</span>
+                        </>
+                      )}
                       {item.submitted && (
                         <>
                           <span className="sep">·</span>
@@ -772,6 +859,16 @@ const loadReplies = async (euid, mode = 'reset') => {
                     </div>
                   </div>
                   <div className="reply-actions">
+                    {/* 阅读位置标识：再次点击 = 取消标记 */}
+                    <Button
+                      size="sm"
+                      variant={isMarker ? 'primary' : 'ghost'}
+                      onClick={() => (isMarker ? clearReadMarker() : markReadHere(item))}
+                      disabled={busy}
+                      title={isMarker ? '取消标记' : '标记为已读'}
+                    >
+                      {isMarker ? '📍 已标记' : '📍'}
+                    </Button>
                     <Button
                       size="sm"
                       variant={isFail ? 'default' : 'danger'}
