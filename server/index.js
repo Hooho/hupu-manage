@@ -32,8 +32,11 @@ const STATS_FILE = path.join(DATA_DIR, 'stats.json')
 const REPLIES_CACHE_DIR = path.join(DATA_DIR, 'replies-cache')
 // 全量抓取进度目录（每个 euid 一份 status / page / fetchedCount）
 const FETCH_PROGRESS_DIR = path.join(DATA_DIR, 'fetch-progress')
+// 阅读位置标识目录（每个 euid 一个文件，存「上次看到这里」）
+const READ_MARKER_DIR = path.join(DATA_DIR, 'read-marker')
 const cachePath = (euid) => path.join(REPLIES_CACHE_DIR, `${euid}.json`)
 const fetchProgressPath = (euid) => path.join(FETCH_PROGRESS_DIR, `${euid}.json`)
+const readMarkerPath = (euid) => path.join(READ_MARKER_DIR, `${euid}.json`)
 
 // 全量抓取的安全上限（防止账号有海量回帖或接口异常时把后端拖死）
 const FETCH_ALL_MAX_PAGES = 500           // 最多跑 500 页 = 25,000 条
@@ -42,6 +45,7 @@ const FETCH_ALL_PAGE_DELAY_MS = 300       // 每页之间 sleep 一下，避免�
 // 确保数据目录存在
 await fs.mkdir(DATA_DIR, { recursive: true })
 await fs.mkdir(REPLIES_CACHE_DIR, { recursive: true })
+await fs.mkdir(READ_MARKER_DIR, { recursive: true })
 await fs.mkdir(FETCH_PROGRESS_DIR, { recursive: true })
 
 // 读取配置
@@ -551,6 +555,54 @@ app.delete('/api/replies/:euid/cache', async (req, res) => {
     res.json({ ok: true })
   } catch {
     res.json({ ok: false, message: 'cache 不存在' })
+  }
+})
+
+// =====================================================================
+// 阅读位置标识（per euid）：用户标记「看到这里」，下次切回自动跳转
+// =====================================================================
+//
+// 数据结构（read-marker/<euid>.json）：
+//   {
+//     pid, tid, page, totalCount, markedAt
+//   }
+//
+// 写入触发：用户在某条 reply 上点「📍」按钮
+// 读取触发：切账号时 / 打开页面时，前端拉一次决定要不要 scroll 跳转
+// 删除触发：用户点「清除标记」或者重新标记（同一 pid 覆盖写）
+app.get('/api/read-marker/:euid', async (req, res) => {
+  const { euid } = req.params
+  try {
+    const data = await fs.readFile(readMarkerPath(euid), 'utf-8')
+    res.json(JSON.parse(data))
+  } catch {
+    // 没标记：返 null marker，前端不跳转
+    res.json(null)
+  }
+})
+
+app.post('/api/read-marker/:euid', async (req, res) => {
+  const { euid } = req.params
+  const { pid, tid, page, totalCount } = req.body || {}
+  if (!pid) return res.status(400).json({ error: '缺少 pid' })
+  const marker = {
+    pid,
+    tid: tid || null,
+    page: page || 1,
+    totalCount: totalCount || null,
+    markedAt: Date.now()
+  }
+  await fs.writeFile(readMarkerPath(euid), JSON.stringify(marker, null, 2))
+  res.json({ ok: true, marker })
+})
+
+app.delete('/api/read-marker/:euid', async (req, res) => {
+  const { euid } = req.params
+  try {
+    await fs.unlink(readMarkerPath(euid))
+    res.json({ ok: true })
+  } catch {
+    res.json({ ok: false, message: 'marker 不存在' })
   }
 })
 
