@@ -520,6 +520,27 @@ select {
   word-break: break-word;
   line-height: 1.65;
 }
+/* 图片缩略图：固定 150×150，多图横排换行 */
+.reply-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.reply-image {
+  width: 150px;
+  height: 150px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  cursor: zoom-in;
+  display: block;
+  transition: var(--t);
+}
+.reply-image:hover {
+  opacity: 0.92;
+  transform: scale(1.02);
+}
 .reply-meta {
   margin-top: 6px;
   font-size: var(--fs-12);

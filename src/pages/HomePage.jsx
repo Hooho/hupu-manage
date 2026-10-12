@@ -867,6 +867,23 @@ const jumpToMarker = async () => {
                   />
                   <div className="reply-body">
                     <div className="reply-content">{item.content}</div>
+                    {/* 图片缩略图：slimReply 保留了 picInfos 字段 */}
+                    {item.picInfos && item.picInfos.length > 0 && (
+                      <div className="reply-images">
+                        {item.picInfos.map((pic, i) => (
+                          <img
+                            key={i}
+                            src={pic.url}
+                            className="reply-image"
+                            alt=""
+                            loading="lazy"
+                            // Hupu 图片域：i1~i5.hoopchina.com.cn，需要 referer
+                            // 但 img 标签带 referrerpolicy="no-referrer" 也能加载
+                            referrerPolicy="no-referrer"
+                          />
+                        ))}
+                      </div>
+                    )}
                     <div className="reply-meta">
                       <span>{item.formatTime}</span>
                       {isMarker && (
