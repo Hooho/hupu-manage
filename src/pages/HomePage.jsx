@@ -7,6 +7,7 @@ import Button from '../components/Button'
 import ProgressBar from '../components/ProgressBar'
 import EmptyState from '../components/EmptyState'
 import { ReplySkeleton } from '../components/Skeleton'
+import ImageViewer from '../components/ImageViewer'
 
 // 用户 puid：优先读 users[i].puid，没填回退到 euid（多数情况下两者一致）
 function resolvePuid(users, euid) {
@@ -58,6 +59,11 @@ function HomePage() {
   const [readMarker, setReadMarker] = useState(null)
   // 每条 reply 的 DOM ref（用于 scrollIntoView 跳转到标记位置）
   const replyRefs = useRef(new Map())
+
+  // 图片弹窗：openImageIndex = null 关闭；number = 当前查看的图片索引
+  // imageList 缓存被点开的 reply 的 picInfos 数组
+  const [openImageIndex, setOpenImageIndex] = useState(null)
+  const [imageList, setImageList] = useState([])
 
   useEffect(() => {
     loadConfig()
@@ -880,6 +886,10 @@ const jumpToMarker = async () => {
                             // Hupu 图片域：i1~i5.hoopchina.com.cn，需要 referer
                             // 但 img 标签带 referrerpolicy="no-referrer" 也能加载
                             referrerPolicy="no-referrer"
+                            onClick={() => {
+                              setImageList(item.picInfos)
+                              setOpenImageIndex(i)
+                            }}
                           />
                         ))}
                       </div>
@@ -1100,6 +1110,13 @@ const jumpToMarker = async () => {
           )}
         </>
       )}
+
+      {/* 图片放大弹窗（全站共用组件，单一实例） */}
+      <ImageViewer
+        images={imageList}
+        openIndex={openImageIndex}
+        onClose={setOpenImageIndex}
+      />
     </div>
   )
 }
