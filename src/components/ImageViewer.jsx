@@ -46,11 +46,11 @@ export default function ImageViewer({ images, openIndex, onClose }) {
                 </Dialog.Close>
               </div>
 
-              {/* 主图：用 Hupu 缩略图（带 _w_xxx_h_xxx_）避开原图登录态鉴权
-                  把尺寸参数替换成 1:1 大方图（1280×1280），
-                  CDN 重新生成，不走原图鉴权。 */}
+              {/* 主图：用 pic.url 列表原图（Hupu CDN 该尺寸就能加载，
+                  不要再重写尺寸——Hupu 不做 resize，任意写 _w_X_h_Y_ 会 404）。
+                  如果将来要做大图，用后端代理或 fetch 拿真原图。 */}
               <img
-                src={current.url.replace(/_w_\d+_h_\d+_/, '_w_1280_h_1280_')}
+                src={current.url}
                 alt=""
                 className="image-viewer-img"
                 referrerPolicy="no-referrer"
