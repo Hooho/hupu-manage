@@ -196,6 +196,8 @@ commit body 写清楚改动点和理由，避免"update files"这种空话。
 - **举报需经虎扑审核**：API 返回 success ≠ 真正生效（要等审核通过 reply 才会被删）。所以 reply 还出现在 `/api/replies` 列表里时都应该允许再次举报，不要按 operations.json 里的 submitted 字段去过滤列表。`operations.json` 的 `submitted` 字段语义是「已提交到虎扑审核队列」，不表示「举报生效」
 - **App 端 mobileapi 写操作（hupu-new-sign 头）**：`notifyShareInfo` 等接口的真实签名是请求头 `hupu-new-sign`（不是 body 里的 `sign` 字段，body 的 sign 是装饰可省）。`hupu-new-sign` 是 **session-level 固定值**（同 session 多次请求都同一个），只跟 `x-hupu-token` / `hupu-encrypt-salt` 绑定，**不依赖业务字段**（bizId/shareTitle/shareURL 随便改 sign 都过）。重放只需保留 `hupu-new-sign` 头 + 改 `crt` 到当前时间。session 过期要重新抓包更新 `config.appAuth`。具体见 `server/operations.js` 的 `notifyShare` action。
 - **`maxTime` 是下一页 cursor**：Hupu `getReplyList` 的 `data.maxTime` 等于「当前页里 createTime 最早那条」的 timestamp。`/api/replies` 翻页必须把这个值存到 `progress.json`，**包括 page 1**——之前 `if (page !== 1)` 跳过保存，导致 page 2 用 backend 默认 `Date.now()` 当 cursor，出现重复/漏数据。page 1 用 `Date.now()`，page > 1 用 progress 里上次存的 maxTime。
+- **Hupu CDN 不做 resize 转换**：`i{N}.hoopchina.com.cn/..._w_W_h_H_.ext` 里的 `W`/`H` **必须等于源图实际尺寸**才能 200，否则 404。已实测：源图是 `_w_1050_h_400_.png` 时，`_w_1280_h_1280_`、`_w_1920_h_1080_`、`_w_2048_h_2048_` 全部 404，只有 `_w_1050_h_400_`（原尺寸）返回 200。所以**别再尝试改 URL 尺寸拿大图**——要么直接用 `pic.url` 原尺寸，要么走后端代理 fetch 真实原图。puppeteer headless 没 Hupu cookie 看到的 403 是 cookie 问题，不是 CDN resize 问题（用户浏览器有 cookie 就能加载原 URL）。
+- **Radix Dialog 子组件不要覆盖 position**：`DialogContent` 默认 `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%)` 实现居中。如果子类（如 `.image-viewer-content`）写 `position: relative` 会覆盖 fixed，弹窗跑到 body 流位置（`top: 0`），整个布局塌掉。同样原因：`width: auto` + flex column 没显式 width，容器会塌成 header 宽度，主图变 `0×0`。修法：子类**不写** `position` 和 `width`，或显式给 `width: 95vw` 这种具体值。
 
 ## 12. 测试方法
 
