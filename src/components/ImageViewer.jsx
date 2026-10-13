@@ -33,11 +33,12 @@ export default function ImageViewer({ images, openIndex, onClose }) {
         <Dialog.Content className="DialogContent image-viewer-content">
           {current && (
             <>
-              {/* 顶角：计数 + 关闭按钮 */}
+              {/* 顶角：计数 + 关闭提示 + 大号 ✕ 按钮 */}
               <div className="image-viewer-header">
                 <span className="image-viewer-counter">
                   {openIndex + 1} / {total}
                 </span>
+                <span className="image-viewer-hint">点击空白处 / 按 ESC 关闭</span>
                 <Dialog.Close asChild>
                   <button className="image-viewer-close" aria-label="关闭" type="button">
                     ✕

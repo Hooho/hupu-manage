@@ -1087,22 +1087,32 @@ select {
   border-radius: var(--r-pill);
 }
 .image-viewer-close {
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.65);
   color: #fff;
-  border: none;
-  width: 32px;
-  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
-  font-size: 16px;
+  font-size: 18px;
+  font-weight: 500;
   cursor: pointer;
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition: var(--t);
+  flex-shrink: 0;
 }
 .image-viewer-close:hover {
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: scale(1.1);
+}
+.image-viewer-hint {
+  font-size: var(--fs-12);
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 12px;
+  user-select: none;
 }
 .image-viewer-img {
   max-width: 95vw;
