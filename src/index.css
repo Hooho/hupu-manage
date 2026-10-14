@@ -1097,7 +1097,12 @@ select {
   background: transparent;
   box-shadow: none;
   border: none;
-  padding: 0;
+  /* 左右 padding 80px 给左右切换按钮留 gutter 位置——
+     按钮 absolute 定位 right: 12 / width: 48，需要至少 60px gutter 才不
+     跟图重叠（之前 60px padding 加上 right:12 + width:48 正好顶在图
+     边缘，看着像在图外但其实是紧贴图边）。80px padding 留 20px 空隙，
+     按钮清楚地在图外的 dark overlay 区。 */
+  padding: 0 80px;
   /* 显式重置 base .DialogContent 的 width: 90vw / max-width: 420px
      （那俩是给普通 ConfirmDialog 用的）。改成 auto + max-width 上限，
      让 content 跟随最宽子元素（图）自然收缩。
