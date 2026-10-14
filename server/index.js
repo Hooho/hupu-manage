@@ -182,7 +182,17 @@ async function writeFetchProgress(euid, progress) {
 // 精简 reply 对象：Hupu API 返回 29 个字段，UI 实际只用 9 个。
 // 丢 quoteInfo（嵌套对象占大头，每条都重复 29 字段）+ userIp（隐私）。
 // 保留 picInfos：举报时需要看图（14/50 的回帖带图）。
+// 保留 quoteInfo：让前端展示「这条 reply 引用的上一条」，需要 pid/username/content。
 // 模块级函数：fetch-all 后台任务 + POST refresh 端点都要复用
+function slimQuoteInfo(q) {
+  if (!q) return null
+  return {
+    pid: q.pid,
+    username: q.username,
+    content: q.content
+  }
+}
+
 function slimReply(r) {
   return {
     pid: r.pid,
@@ -193,7 +203,8 @@ function slimReply(r) {
     formatTime: r.formatTime,
     username: r.username,
     title: r.title,
-    picInfos: r.picInfos || []
+    picInfos: r.picInfos || [],
+    quoteInfo: slimQuoteInfo(r.quoteInfo)
   }
 }
 
@@ -717,10 +728,14 @@ app.get('/api/replies/:euid', async (req, res) => {
           submitCountMap.set(id, (submitCountMap.get(id) || 0) + 1)
         }
       }
+      // live 模式也走 slimReply：和 cache 模式保持同一份字段形状，
+      // 减少 payload 体积（Hupu 原对象有 userIp/header/attr 等 20+ 字段都用不上）
+      // 额外补回 submitted/submitCount 是 UI 状态
       const repliesWithStatus = replies.map((r) => {
+        const slim = slimReply(r)
         const count = submitCountMap.get(r.pid) || 0
         return {
-          ...r,
+          ...slim,
           submitted: count > 0,
           submitCount: count
         }

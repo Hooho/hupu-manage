@@ -65,6 +65,17 @@ function HomePage() {
   const [openImageIndex, setOpenImageIndex] = useState(null)
   const [imageList, setImageList] = useState([])
 
+  // 引用条展开状态：Set<pid>，点开才显示完整内容（默认 line-clamp: 2）
+  const [expandedQuotes, setExpandedQuotes] = useState(() => new Set())
+  const toggleQuote = (pid) => {
+    setExpandedQuotes(prev => {
+      const next = new Set(prev)
+      if (next.has(pid)) next.delete(pid)
+      else next.add(pid)
+      return next
+    })
+  }
+
   useEffect(() => {
     loadConfig()
     loadSessionKeys()
@@ -872,6 +883,19 @@ const jumpToMarker = async () => {
                     disabled={busy}
                   />
                   <div className="reply-body">
+                    {/* 引用条：这条 reply 引用的上一条（quoteInfo）。
+                        有就显示、点击展开；没有就不渲染（直接回主帖的情况）。 */}
+                    {item.quoteInfo && (
+                      <button
+                        type="button"
+                        className={`reply-quote${expandedQuotes.has(item.pid) ? ' expanded' : ''}`}
+                        onClick={() => toggleQuote(item.pid)}
+                        aria-label={expandedQuotes.has(item.pid) ? '收起引用' : '展开引用'}
+                      >
+                        <span className="reply-quote-author">@{item.quoteInfo.username}</span>
+                        <span className="reply-quote-content">{item.quoteInfo.content}</span>
+                      </button>
+                    )}
                     <div className="reply-content">{item.content}</div>
                     {/* 图片缩略图：slimReply 保留了 picInfos 字段 */}
                     {item.picInfos && item.picInfos.length > 0 && (
