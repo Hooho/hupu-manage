@@ -892,7 +892,6 @@ const jumpToMarker = async () => {
                         onClick={() => toggleQuote(item.pid)}
                         aria-label={expandedQuotes.has(item.pid) ? '收起引用' : '展开引用'}
                       >
-                        <span className="reply-quote-author">@{item.quoteInfo.username}</span>
                         <span className="reply-quote-content">{item.quoteInfo.content}</span>
                       </button>
                     )}
