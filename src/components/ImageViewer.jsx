@@ -30,7 +30,16 @@ export default function ImageViewer({ images, openIndex, onClose }) {
     >
       <Dialog.Portal>
         <Dialog.Overlay className="DialogOverlay image-viewer-overlay" />
-        <Dialog.Content className="DialogContent image-viewer-content">
+        <Dialog.Content
+          className="DialogContent image-viewer-content"
+          onClick={(e) => {
+            // 点到 content 自身的空白处（图/按钮之间的 gap）就关闭。
+            // 点到 image/buttons 不会触发（e.target 是子元素，不是 currentTarget）。
+            // Radix 的 overlay 关闭只覆盖 content 框外的点击；content 内部
+            // 空白处需要这个手动关闭逻辑。
+            if (e.target === e.currentTarget) onClose(null)
+          }}
+        >
           {current && (
             <>
               {/* 顶角：计数 + 关闭提示 + 大号 ✕ 按钮 */}

@@ -1098,11 +1098,14 @@ select {
   box-shadow: none;
   border: none;
   padding: 0;
-  /* 必须给一个明确的 width：flex column + width: auto 时容器宽度 = 子元素
-     intrinsic 宽度，img 没加载完之前会塌成 header 宽度，图片显示 0×0。
-     固定 95vw + 1400px 上限，保证容器立即有合理尺寸。 */
-  width: 95vw;
-  max-width: 1400px;
+  /* 显式重置 base .DialogContent 的 width: 90vw / max-width: 420px
+     （那俩是给普通 ConfirmDialog 用的）。改成 auto + max-width 上限，
+     让 content 跟随最宽子元素（图）自然收缩。
+     之前 90vw 让 320px 竖图被塞在 1152px 宽的 content 里、两侧大块暗区
+     是 content 内部空白不是 overlay，Radix 默认只关 overlay 就点不到。
+     现在 content 跟图同宽，图周围是真 overlay，点空白就关。 */
+  width: auto;
+  max-width: 95vw;
   max-height: 95vh;
   display: flex;
   flex-direction: column;
@@ -1114,12 +1117,16 @@ select {
      容器被压扁、img 显示 0×0。 */
 }
 .image-viewer-header {
-  width: 100%;
+  /* 不写 width: 100% — 之前这会把 content 拉成 header 宽（因为 content 没有
+     显式 width，flex column 里 100% 解析成 max-content，把整个 header 横拉），
+     导致 image 在中间、两侧大块暗区其实是 content 内部空白，Radix 默认
+     只对 overlay 关闭就点不到。现在让 content 跟图同宽，header 也跟着窄。 */
   display: flex;
   justify-content: space-between;
   align-items: center;
   color: rgba(255, 255, 255, 0.85);
   font-size: var(--fs-13);
+  padding: 0 4px;
 }
 .image-viewer-counter {
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
